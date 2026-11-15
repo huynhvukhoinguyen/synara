@@ -379,6 +379,7 @@ import { ComposerGoalHeader } from "./chat/ComposerGoalHeader";
 import { ComposerUsageLimitRecovery } from "./chat/ComposerUsageLimitRecovery";
 import { ComposerInputBanners } from "./chat/ComposerInputBanners";
 import { ComposerLatticeContextBar } from "./chat/ComposerLatticeContextBar";
+import { useComposerMenuClearance } from "./chat/composerMenuClearance";
 import { clearLatticeContextSelection } from "./chat/ComposerLatticeContextBar.logic";
 import { LatticeEmptyThread } from "./chat/LatticeEmptyThread";
 import { latticeStarterDraft } from "./chat/LatticeEmptyThread.logic";
@@ -2363,6 +2364,14 @@ export default function ChatView({
   // The selection's context bar floats above the composer, outside its
   // measured height; the empty thread's starters keep clear of both.
   const [latticeContextBarHeightPx, setLatticeContextBarHeightPx] = useState(0);
+  // The composer's upward menus rise above that floating bar instead of opening under it.
+  const [latticeContextBarLayer, setLatticeContextBarLayer] = useState<HTMLDivElement | null>(null);
+  const [composerMenuLayer, setComposerMenuLayer] = useState<HTMLDivElement | null>(null);
+  useComposerMenuClearance({
+    menu: composerMenuLayer,
+    floatingLayer: latticeContextBarLayer,
+    layoutContainerRef: composerFormRef,
+  });
   const handleLatticeStarter = useCallback((prompt: string) => {
     latticeStarterPromptRef.current?.(prompt);
   }, []);
@@ -6886,6 +6895,7 @@ export default function ChatView({
               <ComposerLatticeContextBar
                 onClearSelection={clearLiveLatticeHostSelection}
                 onHeightChange={setLatticeContextBarHeightPx}
+                onLayerChange={setLatticeContextBarLayer}
               />
             ) : null}
             {/* Activity above the input floats as capsules; only queued follow-ups keep
@@ -7160,7 +7170,10 @@ export default function ChatView({
                 )}
               >
                 {composerOverlayOpen && !isComposerApprovalState ? (
-                  <div className={COMPOSER_COMMAND_MENU_FLOATING_WRAPPER_CLASS_NAME}>
+                  <div
+                    ref={setComposerMenuLayer}
+                    className={COMPOSER_COMMAND_MENU_FLOATING_WRAPPER_CLASS_NAME}
+                  >
                     {composerExtrasPanelOpen ? (
                       <ComposerExtrasPanel
                         attachmentsOnly={isEmbed}
