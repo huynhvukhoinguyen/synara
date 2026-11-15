@@ -37,22 +37,28 @@ interface ComposerLatticeContextBarProps {
    * leaves it out on purpose.
    */
   onHeightChange?: (heightPx: number) => void;
+  /** The floating layer itself (null while hidden), for menus that must open above it. */
+  onLayerChange?: (layer: HTMLDivElement | null) => void;
 }
 
 export function ComposerLatticeContextBar({
   onClearSelection,
   onHeightChange,
+  onLayerChange,
 }: ComposerLatticeContextBarProps) {
   const [expanded, setExpanded] = useState(false);
   const onHeightChangeRef = useRef(onHeightChange);
+  const onLayerChangeRef = useRef(onLayerChange);
   useLayoutEffect(() => {
     onHeightChangeRef.current = onHeightChange;
+    onLayerChangeRef.current = onLayerChange;
   });
   const observerRef = useRef<ResizeObserver | null>(null);
   const measureRef = useCallback((node: HTMLDivElement | null) => {
     observerRef.current?.disconnect();
     observerRef.current = null;
     const report = (height: number) => onHeightChangeRef.current?.(Math.ceil(height));
+    onLayerChangeRef.current?.(node);
     if (!node) {
       report(0);
       return;

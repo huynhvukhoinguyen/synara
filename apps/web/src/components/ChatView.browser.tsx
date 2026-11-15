@@ -72,6 +72,8 @@ import {
   removeInlineTerminalContextPlaceholder,
 } from "../lib/terminalContext";
 import { extractTrailingBrowserAnnotations } from "../lib/browserAnnotations";
+import { setLiveLatticeHostContext } from "../lib/latticeHostContext";
+import { LATTICE_HOST_CONTEXT } from "../embedMode";
 import { isMacNavigatorPlatform, randomUUID } from "../lib/utils";
 import { STARRED_MODELS_STORAGE_KEY } from "../lib/starredModels";
 import { readNativeApi } from "../nativeApi";
@@ -2785,6 +2787,60 @@ describe("ChatView transcript geometry (full app)", () => {
       expect(
         document.querySelector('[data-chat-composer-form="true"]')!.contains(banner.element()),
       ).toBe(true);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // Lattice's live editor selection floats a Context bar above the composer. The
+  // slash menu opens upward from the composer too, so it must clear that bar
+  // instead of opening behind it with its rows covered.
+  it("opens the slash menu above Lattice's floating context bar", async () => {
+    sessionStorage.setItem(
+      "synara.poc.embed-mode",
+      JSON.stringify({
+        workspaceRoot: "/repo/project",
+        theme: "light",
+        surface: "chrome",
+        hostOrigin: window.location.origin,
+        locale: "en",
+      }),
+    );
+    onTestFinished(() => sessionStorage.removeItem("synara.poc.embed-mode"));
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, width: 520 },
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-embed-slash-menu" as MessageId,
+        targetText: "embed slash menu",
+      }),
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      setLiveLatticeHostContext({
+        type: LATTICE_HOST_CONTEXT,
+        version: 1,
+        workspaceRoot: "/repo/project",
+        activeSurface: "editor",
+        editor: { path: "main.tex", line: 321, column: 0, selection: "x".repeat(846) },
+      });
+      const contextBar = page.getByTestId("composer-lattice-context");
+      await expect.element(contextBar).toBeVisible();
+
+      editor.focus();
+      await userEvent.keyboard("/pla");
+      const row = page.getByRole("option", { name: /plan/i }).first();
+      await expect.element(row).toBeVisible();
+
+      const menu = row.element().closest<HTMLElement>('[role="listbox"]')!;
+      const menuRect = menu.getBoundingClientRect();
+      const barRect = contextBar.element().getBoundingClientRect();
+      expect(menuRect.bottom).toBeLessThanOrEqual(barRect.top);
+      const rowRect = row.element().getBoundingClientRect();
+      const topmost = document.elementFromPoint(
+        rowRect.left + rowRect.width / 2,
+        rowRect.top + rowRect.height / 2,
+      );
+      expect(row.element().contains(topmost)).toBe(true);
     } finally {
       await mounted.cleanup();
     }
