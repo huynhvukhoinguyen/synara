@@ -192,10 +192,19 @@ describe("Droid resume cursor", () => {
           const threadStarted = Array.from(
             yield* Fiber.join(threadStartedFiber).pipe(Effect.timeout("2 seconds")),
           );
+          // thread.started is published as the prompt is dispatched; wait until the
+          // held prompt has reached Droid, so the turn is provably still running.
+          const droidHadPrompt = yield* Effect.suspend(() =>
+            droid.sessions.get("droid-session-1")?.hasRealContent === true
+              ? Effect.succeed(true)
+              : Effect.fail("not yet"),
+          ).pipe(
+            Effect.retry(Schedule.addDelay(Schedule.recurs(400), () => Effect.succeed("5 millis"))),
+            Effect.orElseSucceed(() => false),
+          );
           const sessionAtEvent = (yield* adapter.listSessions()).find(
             (session) => session.threadId === threadId,
           );
-          const droidHadPrompt = droid.sessions.get("droid-session-1")?.hasRealContent;
           releasePrompt();
           return {
             startedThreadIds: threadStarted.map((event) =>
