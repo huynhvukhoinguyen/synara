@@ -133,13 +133,14 @@ import {
   providerContinuationIdentity,
 } from "../continuationIdentity.ts";
 
-// Devin and Grok report a cursor they cannot reload faithfully (missing native
-// state, or created for other process-start model flags) as resume-state-unavailable.
+// Devin, Grok, and Droid report a cursor they cannot reload faithfully (missing
+// native state, or created for other process-start model flags) as
+// resume-state-unavailable.
 const isStaleNativeSessionLoadError = (
   provider: ProviderKind,
   error: ProviderAdapterError,
 ): error is ProviderAdapterProcessError =>
-  (provider === "devin" || provider === "grok") &&
+  (provider === "devin" || provider === "grok" || provider === "droid") &&
   error instanceof ProviderAdapterProcessError &&
   error.reason === "resume-state-unavailable";
 
@@ -5321,7 +5322,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         }
         // Live adapter snapshots can temporarily omit cursors even though the
         // directory already persisted one from an earlier runtime event.
-        if (!hasResumeCursor(session.resumeCursor) && !hasResumeCursor(binding.resumeCursor)) {
+        if (
+          adapter.capabilities.idleStopsCursorlessSessions !== true &&
+          !hasResumeCursor(session.resumeCursor) &&
+          !hasResumeCursor(binding.resumeCursor)
+        ) {
           retireRuntimeIdleGeneration(threadId, generation);
           return;
         }

@@ -72,6 +72,22 @@ const DROID_API_KEY_AUTH_METHOD_ID = "factory-api-key";
 const DROID_DEVICE_PAIRING_AUTH_METHOD_ID = "device-pairing";
 const DROID_API_KEY_ENV_KEYS = ["FACTORY_API_KEY"] as const;
 
+/**
+ * True when Droid refused to reopen a session because it no longer has it.
+ *
+ * Droid answers `session/resume` and `session/load` this way when the session
+ * files are gone, which includes the "empty draft" sessions it deletes when a
+ * session that never received a message is closed (also when its ACP process
+ * exits).
+ */
+export function isDroidUnknownSessionError(error: unknown): error is AcpErrors.AcpRequestError {
+  return (
+    error instanceof AcpErrors.AcpRequestError &&
+    error.code === -32602 &&
+    /\bunknown session identifier\b/iu.test(error.errorMessage)
+  );
+}
+
 export function getDroidApiKeyEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
   for (const key of DROID_API_KEY_ENV_KEYS) {
     const value = env[key]?.trim();

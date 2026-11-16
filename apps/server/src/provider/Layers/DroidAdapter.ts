@@ -115,6 +115,7 @@ import {
   applyDroidAcpInteractionMode,
   applyDroidAcpModelSelection,
   discoverDroidAcpModels,
+  isDroidUnknownSessionError,
   makeDroidAcpRuntime,
   type DroidAcpRuntimeSettings,
 } from "../acp/DroidAcpSupport.ts";
@@ -231,6 +232,8 @@ interface DroidSessionContext {
   readonly threadId: ThreadId;
   readonly lifecycleGeneration?: string;
   session: ProviderSession;
+  /** Droid's id for this session, published as the resume cursor once resumable. */
+  readonly nativeSessionId: string;
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntimeShape;
   notificationFiber: Fiber.Fiber<void, never> | undefined;
@@ -374,6 +377,23 @@ function parseDroidResume(raw: unknown): { sessionId: string } | undefined {
   if (raw.schemaVersion !== DROID_RESUME_VERSION) return undefined;
   if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
   return { sessionId: raw.sessionId.trim() };
+}
+
+function droidResumeCursor(sessionId: string) {
+  return { schemaVersion: DROID_RESUME_VERSION, sessionId } as const;
+}
+
+// Droid deletes a session that never received a message when the session is
+// closed, and its ACP process closes every session when it exits. A freshly
+// created session therefore cannot be resumed until a prompt has reached it, so
+// its cursor stays `null` (no native continuation) until then. Returns whether
+// this call made the session resumable.
+function markDroidSessionResumable(ctx: DroidSessionContext): boolean {
+  if (ctx.session.resumeCursor !== null) {
+    return false;
+  }
+  ctx.session = { ...ctx.session, resumeCursor: droidResumeCursor(ctx.nativeSessionId) };
+  return true;
 }
 
 export function resolveDroidSessionCwd(
@@ -1025,7 +1045,18 @@ export function makeDroidAdapter(
             Effect.mapError((error) =>
               error instanceof ProviderAdapterRequestError
                 ? error
-                : mapAcpToAdapterError(PROVIDER, input.threadId, "session/start", error),
+                : resumeSessionId !== undefined && isDroidUnknownSessionError(error)
+                  ? // Droid no longer has this session, so nothing can be resumed and no
+                    // prompt was sent. ProviderService starts a fresh session and carries
+                    // the conversation over with the prior-transcript bootstrap.
+                    new ProviderAdapterProcessError({
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      detail: `Droid no longer has session '${resumeSessionId}': ${error.message}`,
+                      reason: "resume-state-unavailable",
+                      cause: error,
+                    })
+                  : mapAcpToAdapterError(PROVIDER, input.threadId, "session/start", error),
             ),
           );
 
@@ -1049,10 +1080,10 @@ export function makeDroidAdapter(
             cwd,
             model: droidModelSelection?.model,
             threadId: input.threadId,
-            resumeCursor: {
-              schemaVersion: DROID_RESUME_VERSION,
-              sessionId: started.sessionId,
-            },
+            // A new session is an empty draft that Droid deletes on close; see
+            // markDroidSessionResumable. `null` also clears an older persisted cursor.
+            resumeCursor:
+              started.sessionSetupMethod === "new" ? null : droidResumeCursor(started.sessionId),
             createdAt: now,
             updatedAt: now,
           };
@@ -1065,6 +1096,7 @@ export function makeDroidAdapter(
               ? { lifecycleGeneration: input.lifecycleGeneration }
               : {}),
             session,
+            nativeSessionId: started.sessionId,
             scope: sessionScope,
             acp,
             notificationFiber: undefined,
@@ -1624,7 +1656,18 @@ export function makeDroidAdapter(
           // turn as cancelled rather than as a provider failure.
           ctx.pendingTurnInterrupted || ctx.stopped
             ? Effect.interrupt
-            : ctx.acp.prompt({ prompt: promptParts }),
+            : Effect.gen(function* () {
+                if (markDroidSessionResumable(ctx)) {
+                  yield* offerRuntimeEvent(ctx.lifecycleGeneration, {
+                    type: "thread.started",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    payload: { providerThreadId: ctx.nativeSessionId },
+                  });
+                }
+                return yield* ctx.acp.prompt({ prompt: promptParts });
+              }),
         ).pipe(
           Effect.mapError((error) =>
             mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
@@ -1780,7 +1823,9 @@ export function makeDroidAdapter(
         return {
           threadId: input.threadId,
           turnId,
-          ...(ctx.session.resumeCursor !== undefined
+          // The first prompt may not have been dispatched yet; its cursor reaches
+          // the binding with the thread.started published at dispatch.
+          ...(ctx.session.resumeCursor !== undefined && ctx.session.resumeCursor !== null
             ? { resumeCursor: ctx.session.resumeCursor }
             : {}),
         };
@@ -1998,10 +2043,7 @@ export function makeDroidAdapter(
         // lifecycle generation, orphaning the fork's approval requests.
         return {
           threadId: input.threadId,
-          resumeCursor: {
-            schemaVersion: DROID_RESUME_VERSION,
-            sessionId: forked.sessionId,
-          },
+          resumeCursor: droidResumeCursor(forked.sessionId),
         };
       }).pipe(
         Effect.mapError((cause) =>
@@ -2275,6 +2317,7 @@ export function makeDroidAdapter(
       capabilities: {
         sessionModelSwitch: "restart-session",
         conversationRollback: "restart-session",
+        idleStopsCursorlessSessions: true,
       },
       startSession,
       sendTurn,

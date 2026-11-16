@@ -327,6 +327,7 @@ function makeFakeCodexAdapter(
   provider: ProviderKind = "codex",
   options?: {
     readonly conversationRollback?: "native" | "restart-session";
+    readonly idleStopsCursorlessSessions?: boolean;
     readonly runtimeEventDelivery?: "fresh-ids-once";
     readonly didResumeSession?: NonNullable<
       ProviderAdapterShape<ProviderAdapterError>["didResumeSession"]
@@ -515,6 +516,7 @@ function makeFakeCodexAdapter(
       ...(options?.conversationRollback
         ? { conversationRollback: options.conversationRollback }
         : {}),
+      ...(options?.idleStopsCursorlessSessions ? { idleStopsCursorlessSessions: true } : {}),
     },
     startSession,
     ...(provider === "claudeAgent" ? { prepareSessionReplacement } : {}),
@@ -667,7 +669,10 @@ function makeProviderServiceLayer(
   });
   const claude = makeFakeCodexAdapter("claudeAgent");
   const antigravity = makeFakeCodexAdapter("antigravity");
-  const droid = makeFakeCodexAdapter("droid", { conversationRollback: "restart-session" });
+  const droid = makeFakeCodexAdapter("droid", {
+    conversationRollback: "restart-session",
+    idleStopsCursorlessSessions: true,
+  });
   const pi = makeFakeCodexAdapter("pi");
   const openCode = makeFakeCodexAdapter("opencode");
   const registry: typeof ProviderAdapterRegistry.Service = {
@@ -6739,7 +6744,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
-  it.effect.each(["devin", "grok"] as const)(
+  it.effect.each(["devin", "grok", "droid"] as const)(
     "retries a stale %s cursor once as a fresh start",
     (provider) =>
       Effect.gen(function* () {
@@ -11984,6 +11989,74 @@ claudeIdleStopFence.layer("ProviderServiceLive conditional Claude idle Stop fenc
           (yield* provider.getRuntimeSessionStopTarget!({ threadId })).stopControlReceipt,
         );
       }).pipe(Effect.ensuring(Deferred.succeed(releaseDispatch, undefined)));
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+});
+
+const droidIdleCleanup = makeProviderServiceLayer(
+  { runtimeIdleStopMs: 100 },
+  { includeRestartRollbackDroid: true },
+);
+droidIdleCleanup.layer("ProviderServiceLive idle cleanup for unprompted Droid", (it) => {
+  it.effect("stops an unprompted Droid handoff session and restarts it fresh on send", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = asThreadId("thread-droid-unprompted-idle");
+      const fake = droidIdleCleanup.droid;
+      const startFresh = fake.startSession.getMockImplementation()!;
+      fake.startSession.mockImplementation((input) =>
+        startFresh(input).pipe(
+          Effect.map((session) => {
+            const fresh = { ...session, resumeCursor: null };
+            fake.updateSession(input.threadId, () => fresh);
+            return fresh;
+          }),
+        ),
+      );
+
+      const outcome = yield* provider.startSessionWithOutcome!(
+        threadId,
+        { provider: "droid", threadId, runtimeMode: "full-access" },
+        { registerPriorTranscriptBootstrapOnFreshStart: true },
+      );
+      assert.equal(outcome.priorTranscriptBootstrapPending, true);
+      yield* fake.waitForRuntimeSubscribers();
+      fake.emit({
+        type: "session.started",
+        eventId: asEventId("droid-unprompted-session-started"),
+        provider: "droid",
+        threadId,
+        createdAt: new Date().toISOString(),
+        payload: {},
+      });
+
+      yield* waitUntil(() => fake.stopSession.mock.calls.length === 1, 2_000);
+      yield* waitUntilEffect(
+        () =>
+          directory
+            .getBinding(threadId)
+            .pipe(Effect.map((binding) => Option.getOrUndefined(binding)?.status === "stopped")),
+        2_000,
+        20,
+        "idle-stopped Droid binding",
+      );
+      assert.isFalse(yield* fake.adapter.hasSession(threadId));
+
+      // The command reactor finds no live runtime and starts one before sending.
+      const restarted = yield* provider.startSessionWithOutcome!(threadId, {
+        provider: "droid",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      assert.equal(restarted.nativeResumeAttempted, false);
+      assert.equal(restarted.priorTranscriptBootstrapPending, true);
+      assert.equal(fake.startSession.mock.calls.length, 2);
+      assert.isUndefined(fake.startSession.mock.calls[1]?.[0]?.resumeCursor);
+      yield* provider.sendTurn({ threadId, input: "first message", attachments: [] });
+      assert.equal(fake.sendTurn.mock.calls.length, 1);
+      fake.startSession.mockImplementation(startFresh);
       yield* provider.stopSession({ threadId });
     }),
   );
