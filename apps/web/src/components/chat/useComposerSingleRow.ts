@@ -5,12 +5,14 @@
 // it collapses back once the line fits that slot again. The slot width is recorded while
 // the row shows, so the block never collapses into a row that would wrap at once.
 // Layer: Chat composer layout
-// Exports: useComposerSingleRow
+// Exports: useComposerSingleRow, COMPOSER_SURFACE_SELECTOR
 
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 
 const EDITOR_SELECTOR = '[data-testid="composer-editor"]';
-const SURFACE_SELECTOR = "[data-chat-composer-surface]";
+/** The composer's input box. Capsules above it (notes, chips) share its
+ *  `.chat-composer-surface` look, so match the box by its data attribute. */
+export const COMPOSER_SURFACE_SELECTOR = "[data-chat-composer-surface]";
 /** Share of the surface assumed to be row chrome before the row has ever been measured. */
 const UNMEASURED_ROW_CHROME_SHARE = 0.5;
 /** A line must clear the slot by this much to fit. Both layouts compare against the same
@@ -48,7 +50,7 @@ export function useComposerSingleRow(input: {
   useLayoutEffect(() => {
     if (!eligible) return;
     const editor = formRef.current?.querySelector<HTMLElement>(EDITOR_SELECTOR);
-    const surface = editor?.closest<HTMLElement>(SURFACE_SELECTOR);
+    const surface = editor?.closest<HTMLElement>(COMPOSER_SURFACE_SELECTOR);
     if (!editor || !surface) return;
     const sync = () => {
       // Fractional widths: rounded clientWidth would leave a sub-pixel band where the row

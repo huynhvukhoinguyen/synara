@@ -4,6 +4,7 @@ import {
   embedComposerMinimumSidebarWidth,
   embedHorizontalContentMinimumSidebarWidth,
 } from "../composerFooterLayout";
+import { COMPOSER_SURFACE_SELECTOR } from "./useComposerSingleRow";
 
 function intrinsicFlexRowWidth(row: HTMLElement): number {
   const style = window.getComputedStyle(row);
@@ -30,7 +31,11 @@ export function observeLatticeComposerLayout(
   const leading = footer?.querySelector<HTMLElement>("[data-chat-composer-leading]");
   const actions = footer?.querySelector<HTMLElement>("[data-chat-composer-actions='right']");
   if (!footer || !leading || !actions) return;
-  const composerSurface = composerForm.querySelector<HTMLElement>(".chat-composer-surface");
+  // Not `.chat-composer-surface`: a capsule above the box (the note a provider
+  // handoff leaves) shares that class, and measuring the send inset against it
+  // reported the frame's width plus the gap as its minimum, ratcheting the
+  // host panel's minimum up on every resize.
+  const composerSurface = composerForm.querySelector<HTMLElement>(COMPOSER_SURFACE_SELECTOR);
   let frame = 0;
   const publishMinimumWidth = () => {
     if (footer.clientWidth <= 0) return;
