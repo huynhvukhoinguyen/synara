@@ -6739,7 +6739,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
-  it.effect.each(["devin", "grok"] as const)(
+  it.effect.each(["devin", "grok", "droid"] as const)(
     "retries a stale %s cursor once as a fresh start",
     (provider) =>
       Effect.gen(function* () {
