@@ -7,7 +7,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ThreadId } from "@synara/contracts";
 import type * as Acp from "@agentclientprotocol/sdk";
-import { Effect, Layer, Schedule } from "effect";
+import { Effect, Fiber, Layer, Schedule, Stream } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ServerConfig } from "../../config.ts";
@@ -26,6 +26,8 @@ const droid = vi.hoisted(() => ({
   sessions: new Map<string, { hasRealContent: boolean }>(),
   spawns: [] as Array<{ resumeSessionId?: string }>,
   nextSessionNumber: 0,
+  // When set, a prompt reaches Droid but its turn stays open until this settles.
+  promptHeldUntil: undefined as Promise<void> | undefined,
 }));
 
 vi.mock("../acp/DroidAcpSupport.ts", async (importOriginal) => ({
@@ -46,8 +48,10 @@ vi.mock("../acp/DroidAcpSupport.ts", async (importOriginal) => ({
           Effect.sync(() => {
             const stored = sessionId === undefined ? undefined : droid.sessions.get(sessionId);
             if (stored) stored.hasRealContent = true;
-            return { stopReason: "end_turn" } as Acp.PromptResponse;
-          }),
+          }).pipe(
+            Effect.andThen(Effect.promise(() => droid.promptHeldUntil ?? Promise.resolve())),
+            Effect.as({ stopReason: "end_turn" } as Acp.PromptResponse),
+          ),
       });
       const resumeSessionId = input.resumeSessionId;
       return {
@@ -125,6 +129,7 @@ describe("Droid resume cursor", () => {
     droid.sessions.clear();
     droid.spawns.length = 0;
     droid.nextSessionNumber = 0;
+    droid.promptHeldUntil = undefined;
   });
 
   it("does not leave a cursor Droid refuses when a handoff session stops before its first prompt", async () => {
@@ -163,6 +168,50 @@ describe("Droid resume cursor", () => {
     expect(cursor).toEqual({ schemaVersion: 1, sessionId: "droid-session-1" });
     expect(droid.spawns).toEqual([{}, { resumeSessionId: "droid-session-1" }]);
     expect(resumed.resumeCursor).toEqual(cursor);
+  });
+
+  // ProviderService persists a session's live cursor to the thread's binding when it
+  // sees thread.started, so the first prompt must publish one while its turn is open.
+  it("publishes thread.started with the resumable cursor while the first turn is still running", async () => {
+    let releasePrompt!: () => void;
+    droid.promptHeldUntil = new Promise((resolve) => {
+      releasePrompt = resolve;
+    });
+    const { startedThreadIds, cursorAtEvent, sessionAtEvent, droidHadPrompt } =
+      await runWithAdapter((adapter) =>
+        Effect.gen(function* () {
+          yield* startSession(adapter);
+          const threadStartedFiber = yield* adapter.streamEvents.pipe(
+            Stream.filter((event) => event.type === "thread.started"),
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.forkChild,
+          );
+          yield* Effect.yieldNow;
+          yield* adapter.sendTurn({ threadId, input: "first message" });
+          const threadStarted = Array.from(
+            yield* Fiber.join(threadStartedFiber).pipe(Effect.timeout("2 seconds")),
+          );
+          const sessionAtEvent = (yield* adapter.listSessions()).find(
+            (session) => session.threadId === threadId,
+          );
+          const droidHadPrompt = droid.sessions.get("droid-session-1")?.hasRealContent;
+          releasePrompt();
+          return {
+            startedThreadIds: threadStarted.map((event) =>
+              event.type === "thread.started" ? event.payload.providerThreadId : undefined,
+            ),
+            cursorAtEvent: sessionAtEvent?.resumeCursor,
+            sessionAtEvent,
+            droidHadPrompt,
+          };
+        }),
+      );
+
+    expect(startedThreadIds).toEqual(["droid-session-1"]);
+    expect(cursorAtEvent).toEqual({ schemaVersion: 1, sessionId: "droid-session-1" });
+    expect(sessionAtEvent?.activeTurnId).toBeDefined();
+    expect(droidHadPrompt).toBe(true);
   });
 
   it("reports a session Droid no longer has as resume-state-unavailable", async () => {

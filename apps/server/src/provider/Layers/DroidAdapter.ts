@@ -386,11 +386,14 @@ function droidResumeCursor(sessionId: string) {
 // Droid deletes a session that never received a message when the session is
 // closed, and its ACP process closes every session when it exits. A freshly
 // created session therefore cannot be resumed until a prompt has reached it, so
-// its cursor stays `null` (no native continuation) until then.
-function markDroidSessionResumable(ctx: DroidSessionContext): void {
-  if (ctx.session.resumeCursor === null) {
-    ctx.session = { ...ctx.session, resumeCursor: droidResumeCursor(ctx.nativeSessionId) };
+// its cursor stays `null` (no native continuation) until then. Returns whether
+// this call made the session resumable.
+function markDroidSessionResumable(ctx: DroidSessionContext): boolean {
+  if (ctx.session.resumeCursor !== null) {
+    return false;
   }
+  ctx.session = { ...ctx.session, resumeCursor: droidResumeCursor(ctx.nativeSessionId) };
+  return true;
 }
 
 export function resolveDroidSessionCwd(
@@ -1653,9 +1656,18 @@ export function makeDroidAdapter(
           // turn as cancelled rather than as a provider failure.
           ctx.pendingTurnInterrupted || ctx.stopped
             ? Effect.interrupt
-            : Effect.sync(() => markDroidSessionResumable(ctx)).pipe(
-                Effect.andThen(ctx.acp.prompt({ prompt: promptParts })),
-              ),
+            : Effect.gen(function* () {
+                if (markDroidSessionResumable(ctx)) {
+                  yield* offerRuntimeEvent(ctx.lifecycleGeneration, {
+                    type: "thread.started",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    payload: { providerThreadId: ctx.nativeSessionId },
+                  });
+                }
+                return yield* ctx.acp.prompt({ prompt: promptParts });
+              }),
         ).pipe(
           Effect.mapError((error) =>
             mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
@@ -1812,7 +1824,7 @@ export function makeDroidAdapter(
           threadId: input.threadId,
           turnId,
           // The first prompt may not have been dispatched yet; its cursor reaches
-          // the binding with the turn's lifecycle events once it is resumable.
+          // the binding with the thread.started published at dispatch.
           ...(ctx.session.resumeCursor !== undefined && ctx.session.resumeCursor !== null
             ? { resumeCursor: ctx.session.resumeCursor }
             : {}),
