@@ -2317,6 +2317,7 @@ export function makeDroidAdapter(
       capabilities: {
         sessionModelSwitch: "restart-session",
         conversationRollback: "restart-session",
+        idleStopsCursorlessSessions: true,
       },
       startSession,
       sendTurn,

@@ -5322,7 +5322,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         }
         // Live adapter snapshots can temporarily omit cursors even though the
         // directory already persisted one from an earlier runtime event.
-        if (!hasResumeCursor(session.resumeCursor) && !hasResumeCursor(binding.resumeCursor)) {
+        if (
+          adapter.capabilities.idleStopsCursorlessSessions !== true &&
+          !hasResumeCursor(session.resumeCursor) &&
+          !hasResumeCursor(binding.resumeCursor)
+        ) {
           retireRuntimeIdleGeneration(threadId, generation);
           return;
         }

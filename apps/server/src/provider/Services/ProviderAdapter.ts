@@ -107,6 +107,12 @@ export interface ProviderAdapterCapabilities {
   readonly supportsForkThroughTurn?: boolean;
   /** True when `turn.diff.updated.payload.unifiedDiff` contains a parseable live patch. */
   readonly supportsLiveTurnDiffPatch?: boolean;
+  /**
+   * True when a live session without a resume cursor holds nothing worth
+   * keeping, so idle cleanup may stop it. Other adapters keep such sessions
+   * alive because their snapshots can omit a cursor the provider still owns.
+   */
+  readonly idleStopsCursorlessSessions?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {
