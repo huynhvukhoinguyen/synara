@@ -14,8 +14,8 @@ const PROCESS_TREE_CAPTURE_ATTEMPTS = 2;
 const PROCESS_TREE_SCAN_MAX_BUFFER_BYTES = 8_388_608;
 const PROCESS_COMMAND_SCAN_MAX_BUFFER_BYTES = 8_388_608;
 
-// Sandboxed hosts can supply a process snapshot executable with the legacy
-// two-query contract. Its command field is an opaque birth-time identity.
+// Sandboxed hosts can supply a process snapshot executable. Its command field
+// is an opaque birth-time identity.
 function processSnapshot(): { command: string; overridden: boolean } {
   const override = process.env.SYNARA_PROCESS_PS_PATH?.trim();
   return override ? { command: override, overridden: true } : { command: "ps", overridden: false };
@@ -469,7 +469,8 @@ export async function isProcessRunning(
       if (snapshot === null) return false;
       return processesByPid(snapshot).has(rootPid);
     }
-    const result = spawnProcessSync("ps", ["-p", String(rootPid), "-o", "stat="], {
+    const snapshot = processSnapshot();
+    const result = spawnProcessSync(snapshot.command, ["-p", String(rootPid), "-o", "stat="], {
       encoding: "utf8",
       maxBuffer: 1024,
       timeout: PROCESS_TREE_SYNC_SCAN_TIMEOUT_MS,

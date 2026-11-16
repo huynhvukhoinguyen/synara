@@ -8,6 +8,7 @@ import {
   captureProcessTree,
   createProcessTreeKiller,
   inspectProcessTree,
+  isProcessRunning,
   parseProcessChildrenMap,
   signalOwnedChildProcess,
   type CapturedProcess,
@@ -143,6 +144,25 @@ describe("POSIX process-tree controller", () => {
     expect(spawnSync).toHaveBeenCalledExactlyOnceWith(
       "/signed/lattice-process-snapshot",
       ["-p", "101", "-o", "pid=,command="],
+      expect.objectContaining({ encoding: "utf8" }),
+    );
+  });
+
+  it.each([
+    ["S\n", 0, true],
+    ["Z\n", 0, false],
+    ["", 0, false],
+    ["S\n", 1, false],
+  ] as const)("checks host liveness for status %j (exit %i)", async (stdout, status, live) => {
+    process.env.SYNARA_PROCESS_PS_PATH = "/signed/lattice-process-snapshot";
+    const spawnSync = vi
+      .spyOn(processRuntime, "spawnProcessSync")
+      .mockImplementation(() => snapshotResult(stdout, status) as never);
+
+    await expect(isProcessRunning(101, { platform: "darwin" })).resolves.toBe(live);
+    expect(spawnSync).toHaveBeenCalledExactlyOnceWith(
+      "/signed/lattice-process-snapshot",
+      ["-p", "101", "-o", "stat="],
       expect.objectContaining({ encoding: "utf8" }),
     );
   });
