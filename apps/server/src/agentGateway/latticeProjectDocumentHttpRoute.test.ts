@@ -8,7 +8,7 @@ describe("Lattice project document HTTP result validation", () => {
       id: "request-1",
       result: {
         ok: true,
-        result: { path: "boards/plan.tldr", documentType: "board", opened: true },
+        result: { path: "boards/plan.excalidraw", documentType: "board", opened: true },
       },
     };
     expect(isLatticeProjectDocumentResultBody(success)).toBe(true);

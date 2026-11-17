@@ -47,10 +47,11 @@ function isPath(value: unknown): value is string {
   );
 }
 
+// Boards are .excalidraw; .tldr is what a Lattice from before the move names.
 function hasExpectedExtension(path: string, documentType: ProjectDocumentType): boolean {
-  return path
-    .toLocaleLowerCase("en-US")
-    .endsWith(documentType === "board" ? ".tldr" : ".lattice-sheet");
+  return documentType === "board"
+    ? /\.(excalidraw|tldr)$/i.test(path)
+    : path.toLocaleLowerCase("en-US").endsWith(".lattice-sheet");
 }
 
 export function parseProjectDocumentRequest(value: unknown): ProjectDocumentRequest | null {

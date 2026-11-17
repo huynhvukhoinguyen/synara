@@ -45,7 +45,7 @@ describe("Lattice project document relay protocol", () => {
     const { listeners, parent } = installWindow();
     const request = {
       id: "document-1",
-      args: { path: "boards/plan.tldr", documentType: "board" as const },
+      args: { path: "boards/plan.excalidraw", documentType: "board" as const },
       expiresAt: Date.now() + 1_000,
     };
     const promise = awaitProjectDocumentHostResult(request, "https://lattice.test", 1_000);
@@ -77,7 +77,7 @@ describe("Lattice project document relay protocol", () => {
         version: 1,
         id: request.id,
         ok: true,
-        result: { path: "boards/other.tldr", documentType: "board", opened: true },
+        result: { path: "boards/other.excalidraw", documentType: "board", opened: true },
       },
     });
     await expect(promise).resolves.toMatchObject({

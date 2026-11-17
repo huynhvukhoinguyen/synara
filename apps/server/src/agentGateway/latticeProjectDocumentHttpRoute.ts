@@ -39,9 +39,9 @@ function isSuccessResult(value: unknown): boolean {
     hasOnlyKeys(value, ["path", "documentType", "opened"]) &&
     isPath(value.path) &&
     (value.documentType === "board" || value.documentType === "spreadsheet") &&
-    value.path
-      .toLocaleLowerCase("en-US")
-      .endsWith(value.documentType === "board" ? ".tldr" : ".lattice-sheet") &&
+    (value.documentType === "board"
+      ? /\.(excalidraw|tldr)$/i.test(value.path)
+      : value.path.toLocaleLowerCase("en-US").endsWith(".lattice-sheet")) &&
     value.opened === true
   );
 }

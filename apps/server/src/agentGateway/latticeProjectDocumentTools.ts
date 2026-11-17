@@ -37,14 +37,19 @@ function parseProjectDocumentArgs(value: unknown): LatticeProjectDocumentRequest
   ) {
     throw new ProjectDocumentInputError("path must be a normalized workspace-relative path.");
   }
-  const extension = documentType === "board" ? ".tldr" : ".lattice-sheet";
+  const extension = documentType === "board" ? ".excalidraw" : ".lattice-sheet";
   const lowerPath = requestedPath.toLocaleLowerCase("en-US");
   const filename = requestedPath.split("/").at(-1) ?? "";
+  // Boards were tldraw (.tldr) files before Lattice moved them to Excalidraw;
+  // a model that still names one gets the board format instead.
+  const legacyBoard = documentType === "board" && lowerPath.endsWith(".tldr");
   const path = lowerPath.endsWith(extension)
     ? requestedPath
-    : filename.includes(".")
-      ? ""
-      : `${requestedPath}${extension}`;
+    : legacyBoard
+      ? `${requestedPath.slice(0, -".tldr".length)}${extension}`
+      : filename.includes(".")
+        ? ""
+        : `${requestedPath}${extension}`;
   if (!path) {
     throw new ProjectDocumentInputError(
       `${documentType} paths must use the ${extension} extension or omit an extension.`,
@@ -79,7 +84,7 @@ export const makeLatticeProjectDocumentTools = (options: {
       definition: {
         name: "create_project_document",
         description:
-          "Create and open a new Lattice board or spreadsheet in the active project. The path may omit its extension; boards become .tldr and spreadsheets become .lattice-sheet. After creation, use create_canvas_shapes for a board or spreadsheet_batch_update for a spreadsheet.",
+          "Create and open a new Lattice board or spreadsheet in the active project. The path may omit its extension; boards become .excalidraw and spreadsheets become .lattice-sheet. After creation, use create_canvas_shapes for a board or spreadsheet_batch_update for a spreadsheet.",
         inputSchema: {
           type: "object",
           properties: {
