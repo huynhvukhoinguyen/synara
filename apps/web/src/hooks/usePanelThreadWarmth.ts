@@ -50,12 +50,15 @@ export interface HostPanelVisibility {
 // collapsed or behind another tab too, and answers the frame's ready signal
 // with the panel's state.
 let panelShownByHost = false;
+let panelForegroundByHost = false;
 const hostVisibilityListeners = new Set<() => void>();
 
 /** Record the host's LATTICE_AGENT_PANEL_VISIBILITY. */
-export function setPanelShownByHost(shown: boolean): void {
-  if (shown === panelShownByHost) return;
+export function setPanelShownByHost(shown: boolean, foreground = true): void {
+  const readable = shown && foreground;
+  if (shown === panelShownByHost && readable === panelForegroundByHost) return;
   panelShownByHost = shown;
+  panelForegroundByHost = readable;
   for (const listener of hostVisibilityListeners) listener();
 }
 
@@ -70,6 +73,11 @@ const hostPanelVisibility: HostPanelVisibility = {
 /** Whether the host shows the panel, as React state. */
 export function usePanelShownByHost(): boolean {
   return useSyncExternalStore(hostPanelVisibility.subscribe, hostPanelVisibility.shown);
+}
+
+/** Whether the user can see the embedded panel's responses in the foreground. */
+export function usePanelReadableByHost(): boolean {
+  return useSyncExternalStore(hostPanelVisibility.subscribe, () => panelForegroundByHost);
 }
 
 /**
