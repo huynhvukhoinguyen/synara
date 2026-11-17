@@ -84,6 +84,7 @@ export interface EmbedModeConfig {
   surface: "chrome" | "drawer";
   hostOrigin: string | null;
   locale: "en" | "zh-CN";
+  browserPanel?: true;
 }
 
 /** Handshake query keys Lattice stamps on the iframe URL. */
@@ -1282,9 +1283,16 @@ export function postSettingsWheelToLattice(
   );
 }
 
-export function postExternalLinkToLattice(config: EmbedModeConfig, url: string): boolean {
+export function postExternalLinkToLattice(
+  config: EmbedModeConfig,
+  url: string,
+  destination?: "external" | "panel",
+): boolean {
   if (!config.hostOrigin || !/^https?:\/\//i.test(url)) return false;
-  window.parent.postMessage({ type: SYNARA_OPEN_EXTERNAL, url }, config.hostOrigin);
+  window.parent.postMessage(
+    { type: SYNARA_OPEN_EXTERNAL, url, ...(destination ? { destination } : {}) },
+    config.hostOrigin,
+  );
   return true;
 }
 
@@ -1863,7 +1871,14 @@ export function initializeEmbedMode(): void {
     const hostOrigin =
       normalizedOrigin(search.get("hostOrigin")) || normalizedOrigin(document.referrer);
     const locale = search.get("locale") === "zh-CN" ? "zh-CN" : "en";
-    const config: EmbedModeConfig = { workspaceRoot, theme, surface, hostOrigin, locale };
+    const config: EmbedModeConfig = {
+      workspaceRoot,
+      theme,
+      surface,
+      hostOrigin,
+      locale,
+      ...(search.get("browserPanel") === "1" ? { browserPanel: true } : {}),
+    };
     // Claim this frame's storage slot before writing, so sibling embed frames in
     // the same tab cannot overwrite each other's handshake.
     window.name = `${EMBED_FRAME_NAME_PREFIX}${surface}`;
@@ -1917,7 +1932,17 @@ export function readEmbedMode(): EmbedModeConfig | null {
         ? normalizedOrigin(parsed.hostOrigin)
         : null;
     const locale = "locale" in parsed && parsed.locale === "zh-CN" ? "zh-CN" : "en";
-    return workspaceRoot ? { workspaceRoot, theme, surface, hostOrigin, locale } : null;
+    const browserPanel = "browserPanel" in parsed && parsed.browserPanel === true;
+    return workspaceRoot
+      ? {
+          workspaceRoot,
+          theme,
+          surface,
+          hostOrigin,
+          locale,
+          ...(browserPanel ? { browserPanel: true } : {}),
+        }
+      : null;
   } catch {
     return null;
   }

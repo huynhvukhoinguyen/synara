@@ -14,6 +14,7 @@ import { createContext } from "react";
 import type { GitHubLinkOpenTarget } from "~/appSettings";
 import { copyTextToClipboard } from "~/hooks/useCopyToClipboard";
 import { openExternalLink } from "~/lib/linkChips";
+import { readEmbedMode } from "~/embedMode";
 import { readNativeApi } from "~/nativeApi";
 
 /** In-app destinations a chat surface offers for the links it renders. */
@@ -84,6 +85,8 @@ export async function showLinkContextMenu(input: {
   }
   const { url, actions } = input;
   const openGitHubItem = resolveGitHubItemLinkOpener(url, actions);
+  const embed = readEmbedMode();
+  const offerBrowserPanel = embed ? embed.browserPanel === true : Boolean(actions);
   const clicked = await api.contextMenu.show(
     [
       ...(openGitHubItem
@@ -97,7 +100,7 @@ export async function showLinkContextMenu(input: {
             },
           ]
         : []),
-      ...(actions
+      ...(offerBrowserPanel
         ? [{ id: "open-in-browser" as const, label: t("workspace:linkMenuBrowser") }]
         : []),
       { id: "open-external" as const, label: t("git:openInExternalBrowser") },
@@ -110,11 +113,12 @@ export async function showLinkContextMenu(input: {
     return;
   }
   if (clicked === "open-in-browser") {
-    actions?.openInBrowserPanel(url);
+    if (embed) openExternalLink(url, "panel");
+    else actions?.openInBrowserPanel(url);
     return;
   }
   if (clicked === "open-external") {
-    openExternalLink(url);
+    openExternalLink(url, "external");
     return;
   }
   if (clicked === "copy-link") {
