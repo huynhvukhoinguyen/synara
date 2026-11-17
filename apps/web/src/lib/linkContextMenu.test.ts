@@ -76,8 +76,13 @@ describe("Lattice's link destination menu", () => {
     await showLinkContextMenu(input);
     expect(host.showMenu).toHaveBeenCalledWith(
       expect.arrayContaining([
-        expect.objectContaining({ id: "open-in-browser" }),
-        expect.objectContaining({ id: "open-external" }),
+        expect.objectContaining({
+          id: "open-link-in",
+          children: [
+            expect.objectContaining({ id: "open-in-browser" }),
+            expect.objectContaining({ id: "open-external" }),
+          ],
+        }),
       ]),
       input.position,
     );
