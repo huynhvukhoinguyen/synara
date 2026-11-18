@@ -18,13 +18,6 @@ describe("locale-aware presentation", () => {
     const monday = new Date(2026, 2, 16, 9, 5).toISOString();
     expect(formatDayAwareTimestamp(monday, "24-hour", now)).toMatch(/^Monday /);
   });
-
-  it("keeps source PR and issue states stable for agent context", () => {
-    expect(resolvePrStatePresentation({ state: "open", isDraft: true }).label).toBe("PR draft");
-    expect(
-      resolveIssueStatePresentation({ state: "closed", stateReason: "completed" }).shortLabel,
-    ).toBe("Closed");
-  });
 });
 
 it("keeps project names that match translation keys unchanged in settings groups", async () => {

@@ -1,0 +1,183 @@
+import { t, setLanguagePreference } from "~/i18n";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { type AppSettings, AppSettingsSchema } from "~/appSettings";
+
+import {
+  createProviderCliFieldsResetPatch,
+  createProviderInstallResetPatch,
+  isProviderCliFieldsDirty,
+  isProviderInstallSettingsDirty,
+  providerInstanceLaunchConfigFor,
+} from "./providerInstallSettings";
+import { providerUpdateStatusLabel } from "./providerUpdateLabels";
+
+const defaults = AppSettingsSchema.makeUnsafe({});
+
+afterEach(() => setLanguagePreference("en"));
+
+describe("isProviderInstallSettingsDirty", () => {
+  it("covers every provider install text and boolean field", () => {
+    const dirtyPatches = [
+      { codexBinaryPath: "/opt/codex" },
+      { codexHomePath: "/tmp/codex-home" },
+      { claudeBinaryPath: "/opt/claude" },
+      { cursorBinaryPath: "/opt/cursor" },
+      { cursorApiEndpoint: "https://cursor.example" },
+      { devinBinaryPath: "/opt/devin" },
+      { antigravityBinaryPath: "/opt/agy" },
+      { grokBinaryPath: "/opt/grok" },
+      { droidBinaryPath: "/opt/droid" },
+      { openCodeBinaryPath: "/opt/opencode" },
+      { openCodeServerUrl: "http://127.0.0.1:5001" },
+      { openCodeExperimentalWebSockets: true },
+      { piAgentDir: "/tmp/pi-agent" },
+      { ompBinaryPath: "/opt/omp" },
+      { ompAgentDir: "/tmp/omp-agent" },
+    ] satisfies ReadonlyArray<Partial<AppSettings>>;
+
+    expect(isProviderInstallSettingsDirty(defaults, defaults)).toBe(false);
+    for (const patch of dirtyPatches) {
+      expect(isProviderInstallSettingsDirty({ ...defaults, ...patch }, defaults)).toBe(true);
+    }
+  });
+
+  it("uses configured flags instead of unreadable password values", () => {
+    expect(
+      isProviderInstallSettingsDirty({ ...defaults, openCodeServerPassword: "secret" }, defaults),
+    ).toBe(false);
+    expect(
+      isProviderInstallSettingsDirty(
+        { ...defaults, openCodeServerPasswordConfigured: true },
+        defaults,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("createProviderInstallResetPatch", () => {
+  it("resets every configured field and writes password values so configured flags clear", () => {
+    const patch = createProviderInstallResetPatch({
+      ...defaults,
+      openCodeServerPassword: "",
+    });
+
+    expect(Object.keys(patch).sort()).toEqual(
+      [
+        "antigravityBinaryPath",
+        "claudeBinaryPath",
+        "claudeConfirmColdCacheResume",
+        "claudeEnableArtifacts",
+        "claudeHomePath",
+        "codexAccounts",
+        "codexBinaryPath",
+        "codexHomePath",
+        "cursorApiEndpoint",
+        "cursorBinaryPath",
+        "devinBinaryPath",
+        "droidBinaryPath",
+        "grokBinaryPath",
+        "ompAgentDir",
+        "ompBinaryPath",
+        "openCodeBinaryPath",
+        "openCodeExperimentalWebSockets",
+        "openCodeServerPassword",
+        "openCodeServerUrl",
+        "piAgentDir",
+        "providerInstances",
+        "selectedCodexAccountId",
+      ].sort(),
+    );
+    expect(patch.openCodeServerPassword).toBe("");
+  });
+});
+
+describe("providerUpdateStatusLabel", () => {
+  it("identifies Pi as installed when no external CLI version exists", () => {
+    expect(
+      providerUpdateStatusLabel({
+        provider: "pi",
+        instanceId: "pi",
+        driver: "pi",
+        status: "ready",
+        available: true,
+        authStatus: "unknown",
+        checkedAt: "2026-07-30T12:00:00.000Z",
+        message: "Pi SDK is included with Synara.",
+      }),
+    ).toBe("Installed");
+  });
+});
+
+describe("provider picker localization", () => {
+  it("removes provider activity controls while retaining the picker explanation", async () => {
+    setLanguagePreference("zh-CN");
+
+    expect(t("settings:showOrHideInstalledProvidersInThePickerAnd2")).toBe(
+      "在选择器中显示或隐藏已安装的提供商，并拖动调整顺序。在此隐藏提供商不会禁用其服务器活动。",
+    );
+  });
+});
+
+describe("providerInstanceLaunchConfigFor", () => {
+  it("maps Pi-family agent directories to agentDir, not binaryPath", () => {
+    expect(
+      providerInstanceLaunchConfigFor("omp", {
+        ...defaults,
+        ompBinaryPath: "/usr/local/bin/omp",
+        ompAgentDir: "~/.omp-work/agent",
+      }),
+    ).toEqual({ binaryPath: "/usr/local/bin/omp", agentDir: "~/.omp-work/agent" });
+    expect(
+      providerInstanceLaunchConfigFor("pi", { ...defaults, piAgentDir: "~/.pi-work/agent" }),
+    ).toEqual({ agentDir: "~/.pi-work/agent" });
+  });
+
+  it("keeps the Claude binary path and leaves the provider-wide Artifacts setting out", () => {
+    expect(
+      providerInstanceLaunchConfigFor("claudeAgent", {
+        ...defaults,
+        claudeBinaryPath: "/opt/homebrew/bin/claude",
+        claudeEnableArtifacts: true,
+      }),
+    ).toEqual({ binaryPath: "/opt/homebrew/bin/claude" });
+  });
+});
+
+describe("provider CLI fields (the Agents list reset)", () => {
+  it("restores only provider-wide CLI options, never accounts or sign-in folders", () => {
+    const patch = createProviderCliFieldsResetPatch(defaults);
+    expect(patch).toHaveProperty("codexBinaryPath");
+    expect(patch).toHaveProperty("openCodeServerPassword");
+    for (const key of [
+      "providerInstances",
+      "codexAccounts",
+      "selectedCodexAccountId",
+      "codexHomePath",
+      "claudeHomePath",
+      "piAgentDir",
+      "ompAgentDir",
+    ]) {
+      expect(patch).not.toHaveProperty(key);
+    }
+  });
+
+  it("ignores account changes when deciding whether there is anything to reset", () => {
+    expect(
+      isProviderCliFieldsDirty(
+        {
+          ...defaults,
+          codexHomePath: "~/.codex-personal",
+          providerInstances: { codex_team: { driver: "codex", displayName: "Team" } },
+        },
+        defaults,
+      ),
+    ).toBe(false);
+    expect(isProviderCliFieldsDirty({ ...defaults, codexBinaryPath: "/bin/codex" }, defaults)).toBe(
+      true,
+    );
+    expect(
+      isProviderCliFieldsDirty({ ...defaults, openCodeServerPasswordConfigured: true }, defaults),
+    ).toBe(true);
+  });
+});

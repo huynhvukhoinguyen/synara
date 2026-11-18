@@ -43,6 +43,7 @@ import {
   buildAutomationCompletionEvaluationPrompt,
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildComposerPredictionPrompt,
   buildDiffSummaryPrompt,
   buildTextTaskPrompt,
   buildPrContentPrompt,
@@ -52,6 +53,7 @@ import {
   decodeStructuredTextGenerationOutput,
   type RawTextFallback,
   sanitizeCommitSubject,
+  sanitizeComposerPrediction,
   sanitizeDiffSummary,
   sanitizeThreadRecap,
   sanitizePrTitle,
@@ -746,6 +748,33 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
       };
     });
 
+    const generateComposerPrediction: TextGenerationShape["generateComposerPrediction"] = Effect.fn(
+      `${config.serviceName}.generateComposerPrediction`,
+    )(function* (input) {
+      const modelSelection = resolveOpenCodeCompatibleModelSelection(config, input);
+      if (!modelSelection) {
+        return yield* new TextGenerationError({
+          operation: "generateComposerPrediction",
+          detail: `Invalid ${config.displayName} model selection.`,
+        });
+      }
+
+      const { prompt, outputSchemaJson, rawTextFallback } = buildComposerPredictionPrompt({
+        conversation: input.conversation,
+      });
+      const generated = yield* runOpenCodeJson({
+        operation: "generateComposerPrediction",
+        cwd: input.cwd,
+        prompt,
+        outputSchemaJson,
+        rawTextFallback,
+        modelSelection,
+        ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
+      });
+
+      return { suggestion: sanitizeComposerPrediction(generated.suggestion) };
+    });
+
     const generateProjectDigest: TextGenerationShape["generateProjectDigest"] = Effect.fn(
       `${config.serviceName}.generateProjectDigest`,
     )(function* (input) {
@@ -853,6 +882,7 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
       generateBranchName,
       generateThreadTitle,
       generateThreadRecap,
+      generateComposerPrediction,
       generateProjectDigest,
       generateAutomationIntent,
       evaluateAutomationCompletion,

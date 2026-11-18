@@ -1,3 +1,12 @@
+// FILE: GitHubInboxFilterBar.tsx
+// Purpose: The head of the code review list: the panel title with refresh and one Filter menu,
+//          the search field, the kind tabs with a count each, and, only while something is
+//          filtered, a row of removable chips naming each active filter. Controlled; the page
+//          owns persistence and URL overrides.
+// Layer: GitHub inbox presentation
+// Exports: GitHubInboxFilterBar
+
+import { COARSE_HIT_AREA_TALL_CLASS_NAME, FOCUS_RING_CLASS_NAME } from "~/touchTargetStyles";
 import type { GitHubInboxSort, ProjectId } from "@synara/contracts";
 import type { ReactNode } from "react";
 
@@ -130,7 +139,9 @@ function KindTabs({
                 : t("workspace:symbol2", { value0: t(tab.labelKey), value1: count })
             }
             className={cn(
-              "flex h-5 items-center gap-1 rounded-md px-1.5 text-ui-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "flex h-5 items-center gap-1 rounded-md px-1.5 text-ui-xs transition-colors",
+              FOCUS_RING_CLASS_NAME,
+              COARSE_HIT_AREA_TALL_CLASS_NAME,
               active
                 ? CHAT_SURFACE_CONTROL_ACTIVE_CLASS_NAME
                 : cn(
@@ -143,7 +154,7 @@ function KindTabs({
           >
             {t(tab.shortKey)}
             {count === undefined ? null : (
-              <span className="text-ui-xs font-normal tabular-nums text-muted-foreground/70">
+              <span className="text-ui-xs font-normal tabular-nums text-muted-foreground">
                 {count}
               </span>
             )}

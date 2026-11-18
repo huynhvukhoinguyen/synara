@@ -3499,7 +3499,7 @@ label:has(> select#reasoning-effort) select {
 .chat-markdown ol,
 .chat-markdown blockquote,
 .chat-markdown pre,
-.chat-markdown .chat-markdown-table-scroll {
+.chat-markdown .chat-markdown-table {
   margin: 0.65rem 0;
 }
 
@@ -3745,7 +3745,7 @@ label:has(> select#reasoning-effort) select {
 .chat-markdown--user ol,
 .chat-markdown--user blockquote,
 .chat-markdown--user pre,
-.chat-markdown--user .chat-markdown-table-scroll {
+.chat-markdown--user .chat-markdown-table {
   margin: 0.45rem 0;
 }
 
@@ -4271,7 +4271,7 @@ label:has(> select#reasoning-effort) select {
 .editor-markdown-preview .chat-markdown ol,
 .editor-markdown-preview .chat-markdown blockquote,
 .editor-markdown-preview .chat-markdown pre,
-.editor-markdown-preview .chat-markdown .chat-markdown-table-scroll {
+.editor-markdown-preview .chat-markdown .chat-markdown-table {
   margin: 0.85rem 0;
 }
 
@@ -4651,6 +4651,35 @@ label:has(> select#reasoning-effort) select {
   background-size: 200% 100%;
   animation: chat-generated-image-shimmer 1.6s ease-in-out infinite;
   color: var(--muted-foreground);
+}
+
+/* Local video played inline from markdown ![alt](clip.mp4). Width and the 16:9
+   box are fixed before metadata loads so the transcript row never changes
+   height when the video arrives (end-follow); the video letterboxes inside. */
+.chat-generated-image.chat-generated-video {
+  width: min(420px, 100%);
+  max-width: 100%;
+}
+
+.chat-generated-video__frame {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 0.85rem;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+
+.chat-generated-video__video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.chat-generated-video[data-status="loading"] .chat-generated-video__video {
+  opacity: 0;
 }
 
 @keyframes chat-generated-image-shimmer {
@@ -5430,6 +5459,101 @@ label:has(> select#reasoning-effort) select {
   outline-offset: 2px;
 }
 
+/* Markdown tables: hairline rows, no grid. lib/markdownTableLayout.ts marks each column:
+   numbers and short values keep their natural width, text columns wrap in what is left, and
+   the table scrolls sideways only when the short columns alone are wider than the chat. */
+.chat-markdown .chat-markdown-table__actions {
+  display: flex;
+  justify-content: flex-end;
+  height: 1.5rem;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.chat-markdown .chat-markdown-table:hover .chat-markdown-table__actions,
+.chat-markdown .chat-markdown-table:focus-within .chat-markdown-table__actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .chat-markdown .chat-markdown-table__actions {
+    opacity: 1;
+  }
+}
+
+.chat-markdown .chat-markdown-table__action {
+  color: var(--muted-foreground);
+}
+
+.chat-markdown .chat-markdown-table__action:hover {
+  color: var(--foreground);
+}
+
+/* No overscroll-behavior here: in WebKit a wide table with horizontal
+   containment claims every trackpad swipe whose first movement leans toward
+   an edge it is resting on (the left one, until it is scrolled), so the rest
+   of a vertical swipe over it scrolled nothing. Code blocks never had it. */
+.chat-markdown .chat-markdown-table__scroll {
+  overflow-x: auto;
+}
+
+.chat-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.chat-markdown th,
+.chat-markdown td {
+  padding: 0.45rem 0;
+  padding-inline-start: 1rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--foreground) 9%, transparent);
+  text-align: start;
+  vertical-align: top;
+  /* Break between words; only a text column may also break inside one (below). */
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.chat-markdown :is(th, td):first-child {
+  padding-inline-start: 0;
+}
+
+.chat-markdown th {
+  padding-top: 0;
+  border-bottom-color: color-mix(in srgb, var(--foreground) 20%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--text-chat-sm);
+  font-weight: 500;
+  vertical-align: bottom;
+}
+
+.chat-markdown tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* Text columns give up width first; the floor stops them collapsing to a letter per line. */
+.chat-markdown td[data-table-column="text"] {
+  min-width: 6em;
+  overflow-wrap: anywhere;
+}
+
+.chat-markdown td:is([data-table-column="numeric"], [data-table-column="short"]),
+.chat-markdown
+  th:is([data-table-column="numeric"], [data-table-column="short"]):not(
+    [data-table-header="wrap"]
+  ) {
+  white-space: nowrap;
+}
+
+.chat-markdown :is(th, td)[data-table-column="numeric"] {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-markdown td[data-table-cell="empty"] {
+  color: var(--muted-foreground);
+}
+
 /* A visual placed in a reply sits inside that reply's markdown. Its components style
    themselves, so the prose rules above step back for them (not for its own prose blocks). */
 .chat-markdown
@@ -5479,7 +5603,8 @@ diffs-container {
    dropdown/control token derived from the active chrome theme. */
 :root {
   --composer-surface: color-mix(in oklab, var(--color-background-control) 90%, transparent);
-  --runtime-full-access-accent: #e25505;
+  /* Same hue as before, darkened until it reads 4.5:1 on the light composer surface. */
+  --runtime-full-access-accent: #c24904;
 }
 
 .dark {
@@ -5828,6 +5953,10 @@ diffs-container {
 }
 .chat-markdown img[data-expandable-image] {
   cursor: zoom-in;
+}
+/* Images sharing a paragraph with prose get their own line (remarkImageRows). */
+.chat-markdown .chat-markdown-image-row {
+  display: block;
 }
 .pull-request-prose p,
 .pull-request-prose ul,
@@ -6342,40 +6471,29 @@ html[data-synara-embed="true"] :is(.chat-composer-surface, .chat-composer-menu-s
   max-width: 1120px;
 }
 
-/* No overscroll-behavior here: in WebKit a wide table with horizontal
-   containment claims every trackpad swipe whose first movement leans toward
-   an edge it is resting on (the left one, until it is scrolled), so the rest
-   of a vertical swipe over it scrolled nothing. Code blocks never had it. */
-.chat-markdown-table-scroll {
-  width: 100%;
-  overflow-x: auto;
+/* The embedded Agent keeps a wide table's horizontal scrollbar visible, inset below it. */
+html[data-synara-embed="true"] .chat-markdown-table__scroll {
+  padding-bottom: 4px;
 }
 
-html[data-synara-embed="true"] .chat-markdown-table-scroll {
-  padding-bottom: 4px;
+/* Lattice's Agent panel is often under 300px wide. There the browser would squeeze every
+   wrappable column (CJK text breaks between any two characters) until a table fits,
+   leaving a character or two per line; a floor keeps them readable and lets the table
+   scroll sideways instead. Short and numeric columns keep their natural width. */
+html[data-synara-embed="true"]
+  .chat-markdown
+  :is(th, td):is([data-table-column="text"], [data-table-column="label"]) {
+  min-width: 8rem;
 }
 
 @media (pointer: fine) {
   @supports not selector(::-webkit-scrollbar) {
-    html[data-synara-embed="true"] .chat-markdown-table-scroll {
+    html[data-synara-embed="true"] .chat-markdown-table__scroll {
       scrollbar-color: color-mix(in srgb, var(--foreground) 10%, transparent) transparent;
     }
   }
 
-  html[data-synara-embed="true"] .chat-markdown-table-scroll::-webkit-scrollbar-thumb {
+  html[data-synara-embed="true"] .chat-markdown-table__scroll::-webkit-scrollbar-thumb {
     background-color: color-mix(in srgb, var(--foreground) 10%, transparent);
   }
-}
-
-.chat-markdown table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.chat-markdown th,
-.chat-markdown td {
-  min-width: 8rem;
-  border: 1px solid var(--border);
-  padding: 0.35rem 0.45rem;
-  text-align: left;
 }

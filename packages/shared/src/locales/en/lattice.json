@@ -321,6 +321,7 @@
   "instructions": "Instructions",
   "internalName": "Internal name: {{internalName}}",
   "interrupted": "{{count}} interrupted",
+  "interruptedSingle": "interrupted",
   "isAvailableAgain": "{{skillName}} is available again.",
   "isClosedWithoutBeingMerged": "#{{number}} is closed without being merged.",
   "isDownloadedSeparatelyToKeepTheApp": "{{provider}} is downloaded separately to keep the app small. After a one-time download it also works offline.",
@@ -949,5 +950,16 @@
   "usageAnalyticsNoteClaudeRetention": "Claude Code deletes session files after 30 days unless set otherwise, so older Claude usage may be missing.",
   "usageAnalyticsTotal": "Total",
   "usageAnalyticsHideProvider": "Hide {{provider}}",
-  "usageAnalyticsShowProvider": "Show {{provider}}"
+  "usageAnalyticsShowProvider": "Show {{provider}}",
+  "defaultProviderResetLabel": "default provider",
+  "providerUsedForNewChatsUntilYouPickA": "Provider used for new chats until you pick a model. New chats then reuse your most recent model and options.",
+  "providerHealthBanner_signInBody": "{{provider}} is installed but not signed in. Sign in here and Lattice opens the login for you, no terminal needed.",
+  "signInHereNoTerminalNeeded": "Sign in here and Lattice opens the login for you, no terminal needed.",
+  "usageLimit_cardArmed": "Lattice will continue this task on this computer when it resets. Nothing is lost.",
+  "signInFlow_bodyBrowser": "Log in on the page that opened and approve access. Lattice connects by itself.",
+  "signInFlow_bodyFailed": "Lattice could not start {{provider}}'s login. The technical details below show the error.",
+  "signInFlow_bodyUnverified": "{{provider}} does not tell Lattice whether an account is signed in. If you completed its steps, you are done.",
+  "signInFlow_stepReady": "{{provider}} ready in Lattice",
+  "chatContextUsesTheNewAccountSAllowance": "Chat context uses the new account’s allowance.",
+  "navGroup_lattice": "Lattice"
 }

@@ -1,5 +1,143 @@
 # Changelog
 
+## 1.6.2 — 2026-11-17
+
+**Local video playback, Codex Ultrafast and more reliable worktrees.**
+
+### Added
+
+- Play and seek local MP4, M4V, WebM, MOV and OGV videos in file previews and inline in chat. Unsupported codecs offer download and retry; desktop-proxied remote hosts offer download instead of streaming.
+- Choose Codex Ultrafast when the account's model catalog advertises it. Speed choices follow the selected model and account.
+- Discover the Synara for iPhone beta from an eligible desktop launch announcement. Remove empty Remote projects from the sidebar without deleting their files; archived chats and unsent drafts prevent removal.
+
+### Changed
+
+- Worktree creation completes without waiting for unrelated Git and GitHub refreshes and uses parallel checkout unless configured otherwise. In one isolated 10,000-file repository run, creation completed in 1.21 seconds; no equivalent before measurement was made.
+- Codex startup warnings are consolidated and failed MCP startup messages identify the server where available.
+- A test-suite cleanup reduced total runner time by 18% in one same-machine comparison; this measures test infrastructure, not application speed.
+
+### Fixed
+
+- Worktree copying preserves relative symlinks, skips untracked nested repositories and waits for in-flight copies before rollback.
+- macOS capture helpers wait for capture teardown, and fallback still requests stop when their owning task ends.
+- Projectless Pi chats start in their dedicated workspace. OpenCode model discovery invalidates its cache when configuration changes.
+- Composer predictions no longer display echoed response objects as suggestions.
+
+### Verification
+
+Local release checks and their inputs are recorded in the release checkpoint. The exact-tag workflow must pass quality, server tests, native packages, macOS signing and notarization, Windows Defender, provenance and packaged startup before publication. Windows uses the version-scoped unsigned exception. Packaged startup does not establish manual installation, upgrades or live provider behavior.
+
+## 1.6.1 — 2026-11-17
+
+**Resume interrupted work, connect agents more easily, and keep conversations moving.**
+
+### Added
+
+- Resume eligible interrupted tasks from the empty composer without adding a new chat message. An unsent message can be dispatched again; an interrupted turn continues using the existing conversation and workspace context.
+- Guided provider sign-in presents login links, codes when needed, connection status and recovery actions in onboarding and other provider entry points.
+- Continue a started chat on another account of the same provider. The target starts from the conversation context without reusing the source account's native continuation.
+
+### Changed
+
+- The usage-limit card shows reset information, usage windows and available recovery controls. Activity rows show the latest settled reply and group multiple linked pull requests.
+- Composer suggestions retry eligible temporary failures, return after clearing a draft and can be inserted with Right Arrow or Tab. Where supported, prediction routing can use a smaller model on the chat's account.
+- Accessibility and visual consistency improve across focus indicators, contrast, labels and touch targets. Tool read and search icons recognize more provider-native names.
+- Release builds parallelize the React Compiler pass. In one local macOS production-build comparison, the web build fell from 67 s to 33 s with eight workers and produced byte-identical output; hosted runner times vary. This measures build time, not app speed.
+
+### Fixed
+
+- Automatic recovery from eligible usage limits can arm in cases previously blocked by an empty Claude profile or unchanged thread metadata.
+- A dropped browser network-guard setup call no longer leaves desktop startup waiting indefinitely; the guard remains required before browser access.
+- Leaving a chat while a send is pending no longer immediately dispatches the next queued message. Skipped automation runs remain terminal during reconciliation.
+- Simulator install, launch and open-URL actions boot a shut-down simulator when needed, subject to existing device approvals and boot limits.
+- Antigravity retains a stored effort selection while model discovery is unresolved. Toasts stay clear of desktop window controls.
+
+### Verification
+
+Local release checks and their inputs are recorded in the release checkpoint. The exact-tag workflow must pass quality, server tests, native packages, macOS signing and notarization, Windows Defender, provenance and packaged startup before publication. Windows uses the version-scoped unsigned exception. Packaged startup does not establish manual installation, upgrades or live provider behavior.
+
+## 1.6.0 — 2026-11-15
+
+**Composer suggestions, clearer tables and a lighter desktop.**
+
+### Added
+
+- After a settled main-chat reply, a supported provider can suggest a follow-up in the empty composer. Tab inserts an editable draft; it never sends automatically. Disable it in Settings → Chat behavior → Show suggestions. Generation uses the chat's provider and recent conversation context; unsupported providers offer no suggestion.
+- Chat tables keep short values, numbers and units together, scroll horizontally when necessary, and offer Copy table to copy their Markdown.
+
+### Changed
+
+- Desktop startup defers unused provider and service work, uses a version-scoped backend compile cache and stops background usage work during shutdown. In source-build tests on one Mac, three streaming Claude threads used 3,136 MB versus 2,281 MB of process-tree memory (27% less). In a separate later comparison, median relaunch-to-typing fell from 1.715 s to 1.495 s (12.8%). Measurements depend on machine and workload; packaged apps, Windows and Linux were not measured.
+- Pi is no longer bundled: install the Pi CLI separately to use the provider. Synara loads its SDK from the installed CLI.
+- Long-running Claude commands show as one activity row, with timing available in tool details.
+
+### Fixed
+
+- Worktree creation and copying local changes no longer fail solely because checkout-sized Git operations exceed 30 seconds; cancellation remains available.
+- Right-to-left provider questions, options and composer placeholders follow their content direction. Project logos and the live Thinking row also render more consistently.
+
+### Verification
+
+Local release checks and their inputs are recorded in the release checkpoint. The exact-tag workflow must pass quality, server tests, native packages, macOS signing and notarization, Windows Defender, provenance and packaged startup before publication. Windows uses the version-scoped unsigned exception. Packaged startup does not establish manual installation, upgrades or live provider behavior.
+
+## 1.5.4 — 2026-11-14
+
+**More flexible projects and pull requests, smoother Remote recovery, and less background work.**
+
+### Added
+
+- Link and manage multiple pull requests in a thread, including stacked work. Existing single-PR links are preserved.
+- Edit a project's additional source folders and use worktree chats in multi-folder projects. Only the primary folder is isolated; additional folders remain live.
+- Claude turn plans are displayed again through Synara's plan tool.
+
+### Changed
+
+- Background tasks appear in the Environment panel. Responses resumed by completed tasks form a clearer reply, with a single copy action for the complete reply.
+- The computer picker offers reconnect, and eligible disconnected Remote computers reconnect automatically. Folder browsing retains the last readable location after an error.
+- Turn diffs and file Undo exclude qualifying incoming Git history while retaining authored changes and conflict resolutions; older checkpoints keep their original behavior.
+- Provider discovery warms only the provider a new thread would use until more are needed. On a Linux source-build test with 20 threads across 12 projects, median process-tree memory fell from 3,009 MB to 766 MB (75%); this depends on installed providers and workload, and packaged apps, macOS and Windows were not measured.
+- Desktop startup avoids unnecessary connection backoff and, for a data home with no thread history, a recovery wait. Large-thread reads use existing indexes. The new-chat background pauses after five seconds without input.
+- With tabs off, a project chat shows its project alongside the title. Images sharing a paragraph with text appear on their own row, and project logos have a clearer border.
+
+### Fixed
+
+- Typed and shared skills reach Claude and Codex more reliably, including skills from another provider's folder.
+- Temporary Cloudflare 403 blocks are distinguished from authentication failures. Claude retries blocked turns after 5, 15 and 45 seconds; stopping or steering cancels a waiting retry.
+- Background task status no longer relies on stale client activity for threads without a live detail stream, and resumed replies no longer briefly appear interrupted because of a missing checkpoint.
+- Remote folder browsing remains usable after navigation errors, including paths with leading or trailing whitespace.
+
+### Verification
+
+The release checkpoint records local checks and their inputs. The exact-tag workflow must pass quality, server tests, native packages, macOS signing and notarization, Windows Defender, provenance and packaged startup before publication. Windows uses the version-scoped unsigned exception. Packaged startup does not establish manual installation, upgrades or live provider behavior. The separate analytics service migration and deployment are not part of the desktop release.
+
+## 1.5.3 — 2026-11-12
+
+**Clearer settings and chats, more reliable accounts, and less background work.**
+
+### Added
+
+- Settings groups navigation by purpose and gives provider accounts their own searchable page. Choose a provider account as the default for new chats; account and sign-in data survive an agents-list reset.
+- Open a subagent alongside its launching chat. Related agent-created threads can be nested in the sidebar and Activity, and the running-agents indicator opens the Subagents list.
+- Browser automation reports bounded, sanitized causes for supported script failures and suggests supported alternatives when an API is unavailable.
+
+### Changed
+
+- Transcript tool activity and routine provider warnings are quieter. Provider questions use a compact composer, and the model picker stays open when selecting a favorite.
+- New installations ask before resuming a large, long-idle Claude session and offer a summary; existing preferences remain intact. Claude is guided to avoid unnecessary unrequested subagents.
+- Idle account polling, usage synchronization and account API requests perform less work. API improvements include fewer database and service round trips and shorter database lock exposure; service availability depends on deployment.
+- Release packaging overlaps independent macOS work while preserving signing and notarization; results vary by runner and no general speedup is claimed.
+
+### Fixed
+
+- Transient account token refresh failures retain the session and retry rather than forcing a sign-out. Sign-in no longer waits on a stalled enrollment, which retries in the background.
+- Usage synchronization avoids stalls on large histories. Stale interrupted-command blockers are settled without suppressing safeguards for other ambiguous commands.
+- Remote projects remain in their selected Space, and Space moves and rail navigation are more consistent.
+- Provider warnings and Claude subagent activity retain actionable information while suppressing routine bookkeeping.
+
+### Verification
+
+The release checkpoint records local checks and their inputs. The exact-tag workflow must pass quality, server tests, all native packages, macOS signing and notarization, Windows Defender, provenance and packaged startup before publication. Windows uses the version-scoped unsigned exception. Packaged startup does not establish manual installation, upgrades or live provider behavior.
+
 ## 1.5.2 — 2026-11-11
 
 **Linux ARM64 desktop packages beside the existing x86_64 build.**

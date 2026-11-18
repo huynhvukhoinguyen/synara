@@ -22,6 +22,7 @@ import {
   buildAutomationCompletionEvaluationPrompt,
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildComposerPredictionPrompt,
   buildDiffSummaryPrompt,
   buildTextTaskPrompt,
   buildPrContentPrompt,
@@ -29,6 +30,7 @@ import {
   buildProjectDigestPrompt,
   buildThreadTitlePrompt,
   sanitizeCommitSubject,
+  sanitizeComposerPrediction,
   sanitizeDiffSummary,
   sanitizeThreadRecap,
   sanitizePrTitle,
@@ -327,6 +329,34 @@ const makeCursorTextGeneration = Effect.gen(function* () {
     };
   });
 
+  const generateComposerPrediction: TextGenerationShape["generateComposerPrediction"] = Effect.fn(
+    "CursorTextGeneration.generateComposerPrediction",
+  )(function* (input) {
+    const modelSelection = resolveCursorModelSelection(input);
+    if (!modelSelection) {
+      return yield* new TextGenerationError({
+        operation: "generateComposerPrediction",
+        detail: "Invalid Cursor model selection.",
+      });
+    }
+
+    const { prompt, outputSchemaJson, rawTextFallback } = buildComposerPredictionPrompt({
+      conversation: input.conversation,
+    });
+    const generated = yield* runAcpTextGeneration(cursorAcpConfig, {
+      childProcessSpawner,
+      operation: "generateComposerPrediction",
+      cwd: input.cwd,
+      prompt,
+      outputSchemaJson,
+      rawTextFallback,
+      modelSelection,
+      providerOptions: input.providerOptions,
+    });
+
+    return { suggestion: sanitizeComposerPrediction(generated.suggestion) };
+  });
+
   const generateProjectDigest: TextGenerationShape["generateProjectDigest"] = Effect.fn(
     "CursorTextGeneration.generateProjectDigest",
   )(function* (input) {
@@ -438,6 +468,7 @@ const makeCursorTextGeneration = Effect.gen(function* () {
     generateBranchName,
     generateThreadTitle,
     generateThreadRecap,
+    generateComposerPrediction,
     generateProjectDigest,
     generateAutomationIntent,
     evaluateAutomationCompletion,

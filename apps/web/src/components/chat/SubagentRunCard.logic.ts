@@ -895,51 +895,63 @@ export function describeSubagentRunRow(
 }
 
 export interface SubagentRunHeaderDescription {
+  /** "Created subagent" / "Created 3 subagents". */
   title: string;
+  /** The one subagent's name when the card holds a single launch. */
+  subject: string | null;
   nestedLabel: string | null;
   segments: ReadonlyArray<{ text: string; tone: "running" | "failed" | null }>;
   durationLabel: string | null;
 }
 
-// "2 subagents · 1 running · 12s" while live; "3 subagents · 1 done · 1 failed
-// · 1 stopped · 21s" after, or "· stopped by you ·" when every one was stopped.
-// Only the running and failed counts take a hue.
+// "Created 2 subagents · 1 running · 12s" while live; "Created 3 subagents ·
+// 1 done · 1 failed · 1 stopped · 21s" after, or "· stopped ·" when every one
+// was stopped. A single launch names its subagent and drops the counts:
+// "Created subagent Explore auth · running · 4s". Only the running and failed
+// segments take a hue.
 export function describeSubagentRunHeader(
   card: SubagentRunCardModel,
   nowMs: number,
+  translate: typeof t = t,
 ): SubagentRunHeaderDescription {
+  const single = card.rows.length === 1;
   const segments: Array<{ text: string; tone: "running" | "failed" | null }> = [];
   if (card.isLive) {
     segments.push({
-      text: t("chat:backgroundTasksRunning", { count: card.counts.running }),
+      text: single
+        ? t("chat:running")
+        : t("chat:backgroundTasksRunning", { count: card.counts.running }),
       tone: "running",
     });
   } else if (card.allStopped) {
     segments.push({ text: t("chat:stopped2"), tone: null });
   } else {
     if (card.counts.done > 0)
-      segments.push({ text: t("chat:done2", { value0: card.counts.done }), tone: null });
+      segments.push({
+        text: single ? t("chat:done") : t("chat:done2", { value0: card.counts.done }),
+        tone: null,
+      });
     if (card.counts.failed > 0)
       segments.push({
-        text: t("chat:failed", { value0: card.counts.failed }),
+        text: single ? t("common:failed") : t("chat:failed", { value0: card.counts.failed }),
         tone: "failed",
       });
     if (card.counts.stopped > 0)
       segments.push({
-        text: t("common:stopped", { value0: card.counts.stopped }),
+        text: single ? t("chat:stopped2") : t("common:stopped", { value0: card.counts.stopped }),
         tone: null,
       });
     if (card.counts.interrupted > 0)
       segments.push({
-        text: t("lattice:interrupted", { count: card.counts.interrupted }),
+        text: single
+          ? t("lattice:interruptedSingle")
+          : t("lattice:interrupted", { count: card.counts.interrupted }),
         tone: null,
       });
   }
   return {
-    title:
-      card.rows.length === 1
-        ? t("lattice:n1Subagent")
-        : t("lattice:subagents", { count: card.rows.length }),
+    title: translate("chat:subagentsCreated", { count: card.rows.length }),
+    subject: single ? (card.rows[0]?.item.primaryLabel ?? null) : null,
     nestedLabel: card.nestedCount > 0 ? t("lattice:nested", { count: card.nestedCount }) : null,
     segments,
     durationLabel: elapsedLabel(card.startedAtMs, card.endedAtMs, card.isLive, nowMs),
@@ -982,6 +994,8 @@ export interface SubagentRunCardScan {
   liveThreadIds: ReadonlySet<string>;
   /** Provider thread ids of every row, live or settled. */
   coveredProviderThreadIds: ReadonlySet<string>;
+  /** Work entry ids of the cards with a row still live; settled cards fold with their turn. */
+  liveCardEntryIds: ReadonlySet<string>;
 }
 
 export const EMPTY_SUBAGENT_RUN_SCAN: SubagentRunCardScan = Object.freeze({
@@ -989,6 +1003,7 @@ export const EMPTY_SUBAGENT_RUN_SCAN: SubagentRunCardScan = Object.freeze({
   liveProviderThreadIds: new Set<string>(),
   liveThreadIds: new Set<string>(),
   coveredProviderThreadIds: new Set<string>(),
+  liveCardEntryIds: new Set<string>(),
 });
 
 function deriveEntrySubagentRunCard(
@@ -1020,6 +1035,7 @@ export function scanSubagentRunCards(input: SubagentRunScanInput): SubagentRunCa
   const liveProviderThreadIds = new Set<string>();
   const liveThreadIds = new Set<string>();
   const coveredProviderThreadIds = new Set<string>();
+  const liveCardEntryIds = new Set<string>();
   for (let index = input.entries.length - 1; index >= 0; index -= 1) {
     const entry = input.entries[index]!;
     if (!entry.subagentRun) continue;
@@ -1030,13 +1046,37 @@ export function scanSubagentRunCards(input: SubagentRunScanInput): SubagentRunCa
     for (const row of flattenRows(card.rows)) {
       coveredProviderThreadIds.add(row.item.providerThreadId);
       if (!isRowLive(row)) continue;
+      liveCardEntryIds.add(entry.id);
       liveProviderThreadIds.add(row.item.providerThreadId);
       if (row.threadId) liveThreadIds.add(row.threadId);
     }
   }
   return coveredProviderThreadIds.size === 0
     ? EMPTY_SUBAGENT_RUN_SCAN
-    : { latestRunningCard, liveProviderThreadIds, liveThreadIds, coveredProviderThreadIds };
+    : {
+        latestRunningCard,
+        liveProviderThreadIds,
+        liveThreadIds,
+        coveredProviderThreadIds,
+        liveCardEntryIds,
+      };
+}
+
+/**
+ * Adjacent cards from one turn render as one card: their members and subagents
+ * join under the first entry's identity.
+ */
+export function mergeSubagentRunEntries(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry {
+  const first = entries[0]!;
+  if (entries.length === 1) return first;
+  return {
+    ...first,
+    subagents: entries.flatMap((entry) => entry.subagents ?? []),
+    subagentRun: {
+      members: entries.flatMap((entry) => entry.subagentRun?.members ?? []),
+      entryIds: entries.map((entry) => entry.id),
+    },
+  };
 }
 
 export interface RunningAgentsSummary {

@@ -5,7 +5,7 @@
 // Layer: Settings UI components
 // Exports: UsageSettingsPanel
 
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { useTranslation } from "~/i18n";
 
@@ -23,9 +23,12 @@ type UsageTab = "overview" | "analytics" | "billing";
 export function UsageSettingsPanel({
   billingEnabled,
   target,
+  overviewExtra,
 }: {
   billingEnabled: boolean;
   target: string | null;
+  /** Settings that react to limits (warnings, auto-resume), shown under Overview. */
+  overviewExtra?: ReactNode;
 }) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<UsageTab>(() =>
@@ -52,7 +55,10 @@ export function UsageSettingsPanel({
         ) : tab === "billing" && billingEnabled ? (
           <BillingSettingsPanel />
         ) : (
-          <ProviderUsageSettingsPanel />
+          <div className="space-y-6">
+            <ProviderUsageSettingsPanel />
+            {overviewExtra}
+          </div>
         )}
       </div>
     </div>

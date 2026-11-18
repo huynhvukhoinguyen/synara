@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { createInstance } from "i18next";
+import { createInstance, type i18n as I18n } from "i18next";
 import { initReactI18next, useTranslation as useReactTranslation } from "react-i18next";
 
 import { uiLocalizationResources } from "@synara/shared/uiLocalizationResources";
@@ -23,7 +23,7 @@ function hostLocale(): (typeof UI_LOCALES)[number] | null {
 // the host language again (applyHostLocale) before the first render.
 let activeHostLocale = hostLocale();
 
-export const i18n = createInstance();
+export const i18n: I18n = createInstance();
 void i18n.use(initReactI18next).init({
   lng: activeHostLocale ?? "en",
   fallbackLng: "en",

@@ -69,7 +69,6 @@ function Picker(props: {
       provider="claudeAgent"
       model={SONNET}
       lockedProvider={null}
-      boundProviderInstance={null}
       effortControl="menu"
       providers={[claudeStatus(props.version)]}
       modelOptionsByProvider={MODEL_OPTIONS_BY_PROVIDER}

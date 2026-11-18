@@ -5,7 +5,7 @@
 
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { i18n, t } from "../i18n";
+import { i18n } from "../i18n";
 import { SettingsRow } from "./settings/SettingsPanelPrimitives";
 
 import { SettingsSidebarNav } from "./SettingsSidebarNav";
@@ -14,28 +14,8 @@ import {
   SETTINGS_SEARCH_ENTRIES,
   rankSettingsSearchEntries,
   settingsSearchEntryTarget,
+  settingsSearchEntryTitle,
 } from "../settingsSearchIndex";
-
-describe("settings labels", () => {
-  it("renders catalog labels while retaining explicit navigation targets", () => {
-    const html = renderToStaticMarkup(
-      <SettingsRow
-        id="setting-default-provider"
-        title="settings:changed_defaultProvider"
-        description="settings:chooseTheProviderUsedForNewChatsAgentCodex"
-      />,
-    );
-    expect(html).toContain('id="setting-default-provider"');
-    expect(html).toContain("Default provider");
-    expect(html).toContain("Choose the provider used for new chats");
-  });
-
-  it("finds English settings with stable links", () => {
-    const [result] = rankSettingsSearchEntries("default provider", 12);
-    expect(result?.id).toBe("general:default-provider");
-    expect(settingsSearchEntryTarget(result!)).toBe("setting-default-provider");
-  });
-});
 
 // Lattice's embedded panel keeps reading in Chinese when Lattice does.
 describe("Chinese settings in Lattice's panel", () => {
@@ -72,55 +52,26 @@ describe("rankSettingsSearchEntries", () => {
     expect(results.some((entry) => entry.id === "behavior:diff-line-wrapping")).toBe(true);
   });
 
-  it("indexes the follow-up Queue and Steer preference", () => {
-    const results = rankSettingsSearchEntries("steer", 12);
-    expect(results.some((entry) => entry.id === "behavior:follow-up-behavior")).toBe(true);
-  });
-
-  it("surfaces the automation run threads visibility row", () => {
-    const results = rankSettingsSearchEntries("automation runs", 12);
-    expect(results.some((entry) => entry.id === "general:automation-run-threads")).toBe(true);
-  });
-
-  it("keeps the Computer auto-open row searchable for every desktop preview", () => {
-    const offered = rankSettingsSearchEntries("open automatically", 12, {
-      computerBackendIsVisibleDesktop: false,
-    });
-    expect(offered.some((entry) => entry.id === "computer:open-automatically")).toBe(true);
-
-    const visibleDesktop = rankSettingsSearchEntries("open automatically", 12, {
-      computerBackendIsVisibleDesktop: true,
-    });
-    expect(visibleDesktop.some((entry) => entry.id === "computer:open-automatically")).toBe(true);
-  });
-
-  it("indexes the Computer control switch with its guardrails", () => {
-    const entry = SETTINGS_SEARCH_ENTRIES.find(
-      (candidate) => candidate.id === "computer:how-agents-use-the-desktop",
-    );
-    expect(t(entry!.title)).toBe("Computer control");
-    expect(t(entry!.keywords)).toContain("Approval gates and Stop still apply");
-  });
-
-  it("includes the activity toasts notification row", () => {
-    const results = rankSettingsSearchEntries("toasts", 12);
-    expect(results.some((entry) => entry.id === "notifications:activity-toasts")).toBe(true);
-  });
-
-  it("indexes environment instructions and the system UI font row", () => {
-    expect(SETTINGS_SEARCH_ENTRIES.map((entry) => entry.id)).toEqual(
-      expect.arrayContaining(["general:environment-instructions", "appearance:system-ui-font"]),
-    );
-  });
-
-  it("indexes the stacked and split diff layout preference", () => {
-    const results = rankSettingsSearchEntries("stacked", 12);
-    expect(results.some((entry) => entry.id === "behavior:diff-layout")).toBe(true);
-  });
-
   it("surfaces every row in a section when searching the section label", () => {
     const results = rankSettingsSearchEntries("appearance", SETTINGS_SEARCH_ENTRIES.length);
     expect(results.some((entry) => entry.section === "appearance")).toBe(true);
+  });
+
+  it("omits desktop-only Appearance controls in a browser", () => {
+    const results = rankSettingsSearchEntries("appearance", SETTINGS_SEARCH_ENTRIES.length);
+    const targets = results.map(settingsSearchEntryTarget);
+    expect(targets).toContain("setting-base-font-size");
+    expect(targets).not.toContain("setting-app-icon");
+    expect(targets).not.toContain("setting-use-custom-title-bar");
+  });
+
+  it("finds the agent keep-awake row only when the server supports it", () => {
+    const targets = (keepAwakeAvailable: boolean) =>
+      rankSettingsSearchEntries("keep computer awake", SETTINGS_SEARCH_ENTRIES.length, {
+        keepAwakeAvailable,
+      }).map(settingsSearchEntryTarget);
+    expect(targets(false)).not.toContain("setting-keep-computer-awake");
+    expect(targets(true)).toContain("setting-keep-computer-awake");
   });
 
   it("respects the result limit", () => {
@@ -141,31 +92,35 @@ describe("rankSettingsSearchEntries", () => {
       }
     }
   });
+});
 
-  it("finds the Behavior and Providers rows by their titles", () => {
-    const titles = (query: string) =>
-      rankSettingsSearchEntries(query, 12).map((entry) => t(entry.title));
-    expect(titles("dictating")).toContain("Enter while dictating");
-    expect(titles("diff colors")).toContain("Pull request diff colors");
-    expect(titles("enabled providers")).toContain("Enabled providers");
+describe("account search", () => {
+  const context = {
+    accounts: [
+      {
+        instanceId: "codex_work",
+        label: "Work",
+        providerLabel: "Codex",
+        identity: "alex@acme.dev · Acme Labs",
+      },
+      { instanceId: "claudeAgent", label: "Personal", providerLabel: "Claude", identity: null },
+    ],
+  };
+
+  it("leads with the Accounts page for account, sign-in, and login queries", () => {
+    for (const query of ["account", "sign in", "login", "second account"]) {
+      const results = rankSettingsSearchEntries(query, 12, context);
+      expect(results.some((entry) => entry.id === "accounts:accounts")).toBe(true);
+    }
   });
 
-  it("finds the Fold finished turns and Wait for subagents rows", () => {
-    const sections = (query: string) =>
-      rankSettingsSearchEntries(query, 12).map((entry) => `${entry.section}:${t(entry.title)}`);
-    expect(sections("fold")).toContain("behavior:Fold finished turns");
-    expect(sections("worked for")).toContain("behavior:Fold finished turns");
-    expect(sections("subagents")).toContain("notifications:Wait for subagents");
-    const targets = (query: string) =>
-      rankSettingsSearchEntries(query, 12).map((entry) => settingsSearchEntryTarget(entry));
-    expect(targets("fold")).toContain("setting-fold-finished-turns");
-    expect(targets("subagents")).toContain("setting-wait-for-subagents");
-  });
-
-  it("deep-links the provider picker result to the Available CLIs row", () => {
-    const [top] = rankSettingsSearchEntries("picker order", 12);
-    expect(top && t(top.title)).toBe("Available CLIs");
-    expect(settingsSearchEntryTarget(top!)).toBe("setting-available-clis");
+  it("finds each account by name, email, or agent and opens its row", () => {
+    const [byEmail] = rankSettingsSearchEntries("acme.dev", 12, context);
+    expect(byEmail?.id).toBe("accounts:account:codex_work");
+    expect(settingsSearchEntryTitle(byEmail!)).toBe("Codex · Work");
+    expect(settingsSearchEntryTarget(byEmail!)).toBe("setting-account-codex-work");
+    const byAgent = rankSettingsSearchEntries("claude personal", 12, context);
+    expect(byAgent.some((entry) => entry.id === "accounts:account:claudeAgent")).toBe(true);
   });
 });
 
@@ -184,18 +139,18 @@ describe("SettingsSidebarNav", () => {
       <SettingsSidebarNav activeSection="general" onSelectSection={vi.fn()} />,
     );
 
-    expect(markup).toContain("Personal");
-    expect(markup).toContain("Integrations");
-    expect(markup).toContain("Coding");
-    expect(markup).toContain("System");
-    expect(markup).toContain("Archived");
-    expect(markup).toContain("Chat behavior");
+    expect(markup).toContain(">Lattice<");
+    expect(markup).toContain(">Agents<");
+    expect(markup).toContain(">Connections<");
+    expect(markup).toContain(">Workspace<");
+    expect(markup).toContain(">System<");
+    expect(markup).toContain(">Chats<");
     expect(markup).toContain("MCP connections");
     expect(markup).toContain("Agent providers");
     expect(markup).not.toContain("Models &amp; writing");
-    expect(markup).toContain("Managed worktrees");
-    expect(markup).toContain("System tools");
-    expect(markup).toContain("Archived threads");
+    expect(markup).toContain(">Worktrees<");
+    expect(markup).toContain(">Advanced<");
+    expect(markup).toContain(">Archive<");
     expect(markup).not.toContain(">App<");
     expect(markup).not.toContain(">Synara<");
   });

@@ -348,6 +348,8 @@ import type {
   ServerReadThreadDiagnosticsResult,
   ServerGenerateAutomationIntentInput,
   ServerGenerateAutomationIntentResult,
+  ServerGenerateComposerPredictionInput,
+  ServerGenerateComposerPredictionResult,
   ServerGenerateThreadRecapInput,
   ServerGenerateThreadRecapResult,
   ServerGetEnvironmentResult,
@@ -1095,6 +1097,8 @@ export interface DesktopBridge {
     revealApp: () => Promise<boolean>;
   };
   getWsUrl: () => string | null;
+  /** Resolves once the desktop has seen its backend become ready, or stop trying. */
+  whenBackendReady?: () => Promise<void>;
   remoteResourceUrl?: (hostId: string, reference: RemoteResourceReference) => string | null;
   /**
    * Absolute filesystem path for a File from drag/drop or file inputs.
@@ -1511,6 +1515,10 @@ export interface NativeApi {
     generateThreadRecap: (
       input: ServerGenerateThreadRecapInput,
     ) => Promise<ServerGenerateThreadRecapResult>;
+    generateComposerPrediction: (
+      input: ServerGenerateComposerPredictionInput,
+      options?: { readonly signal?: AbortSignal },
+    ) => Promise<ServerGenerateComposerPredictionResult>;
     generateAutomationIntent: (
       input: ServerGenerateAutomationIntentInput,
     ) => Promise<ServerGenerateAutomationIntentResult>;

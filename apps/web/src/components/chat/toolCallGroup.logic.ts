@@ -45,6 +45,7 @@ export type ToolCallSummaryCategory =
   | "command"
   | "fetch"
   | "agent"
+  | "background"
   | "tool"
   | "other";
 
@@ -71,9 +72,10 @@ export interface ToolCallGroupSummary {
   iconEntry: WorkLogEntry;
 }
 
-// Rich rows (subagent strips, automation cards, thread-creation recaps,
-// background tasks, image previews) and non-tool tones (errors, approvals,
-// info) must stay individually visible, so they never fold into a summary group.
+// Rich rows (subagent strips, automation cards, thread-creation recaps, image
+// previews) and non-tool tones (errors, approvals, info) must stay individually
+// visible, so they never fold into a summary group. Background task launches fold
+// like any command: their live state lives in the Environment panel, not the transcript.
 export function isSummarizableToolCallEntry(entry: WorkLogEntry): boolean {
   return (
     (entry.tone === "tool" ||
@@ -85,7 +87,6 @@ export function isSummarizableToolCallEntry(entry: WorkLogEntry): boolean {
     !entry.automation &&
     !entry.connectorProposalId &&
     !entry.subagentAction &&
-    !entry.backgroundTask &&
     (entry.images?.length ?? 0) === 0 &&
     (entry.subagents?.length ?? 0) === 0
   );
@@ -94,12 +95,41 @@ export function isSummarizableToolCallEntry(entry: WorkLogEntry): boolean {
 const READ_VERBS = new Set(["Read", "Reading"]);
 const SEARCH_VERBS = new Set(["Searched", "Searching", "Found", "Finding"]);
 // Provider tools that only read or search, named the way Claude and ACP agents
-// report them (`Read`, `Grep`, `Glob`, `WebSearch`).
-const READ_TOOL_NAMES = new Set(["read", "readfile", "viewfile"]);
-const SEARCH_TOOL_NAMES = new Set(["grep", "glob", "websearch", "findfiles", "searchfiles"]);
+// report them (`Read`, `read_file`, `view`, `Grep`, `Glob`, `search`, `find`).
+// Keep in sync with the icon matchers in TimelineWorkEntryRow.tsx.
+const READ_TOOL_NAMES = new Set([
+  "read",
+  "reading",
+  "readfile",
+  "readfiles",
+  "readtextfile",
+  "view",
+  "viewfile",
+  "viewtextfile",
+  "hashlineread",
+]);
+const SEARCH_TOOL_NAMES = new Set([
+  "grep",
+  "glob",
+  "websearch",
+  "search",
+  "searching",
+  "searched",
+  "find",
+  "finding",
+  "found",
+  "findfiles",
+  "searchfiles",
+  "searchtool",
+  "hashlinegrep",
+]);
 
 function normalizedToolName(entry: WorkLogEntry): string {
-  return (entry.toolName ?? "").toLowerCase().replace(/[^a-z]/g, "");
+  // toolName wins; the title's first word is the fallback for ACP calls that
+  // arrive with only a `kind` and no native name ("Read /home/x").
+  const title = entry.command || entry.rawCommand ? undefined : entry.toolTitle;
+  const name = entry.toolName ?? title?.trim().split(/\s+/, 1)[0] ?? "";
+  return name.toLowerCase().replace(/[^a-z]/g, "");
 }
 
 function classifyCommandVerb(verb: string): ToolCallSummaryCategory {
@@ -109,6 +139,9 @@ function classifyCommandVerb(verb: string): ToolCallSummaryCategory {
 }
 
 export function classifyToolCallSummaryCategory(entry: WorkLogEntry): ToolCallSummaryCategory {
+  if (entry.backgroundTask) {
+    return "background";
+  }
   if (isFileChangeWorkLogEntry(entry)) {
     return "edit";
   }
@@ -214,6 +247,8 @@ function summaryPartPhrase(
       return one
         ? translate("lattice:ran1AgentTask")
         : translate("lattice:ranAgentTasks", { count });
+    case "background":
+      return translate("chat:inBackground", { count });
     case "tool":
       return one ? translate("lattice:used1Tool") : translate("lattice:usedTools", { count });
     case "other":
@@ -272,7 +307,7 @@ export function summarizeToolCallGroup(
     if (entry.toolStatus === "running") {
       hasRunningEntry = true;
     }
-    if (entry.toolStatus === "failed") {
+    if (entry.toolStatus === "failed" || entry.backgroundTask?.status === "failed") {
       failedCount += 1;
     }
     const category = classifyToolCallSummaryCategory(entry);

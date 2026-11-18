@@ -12,7 +12,13 @@ import { NetService } from "@synara/shared/Net";
 import { FetchHttpClient } from "effect/unstable/http";
 import { startDesktopParentMonitor } from "./desktopParentMonitor";
 import { initializeDesktopUpdateBridge } from "./desktopUpdateBridge";
+import {
+  releaseBackendCompileCacheEnvironment,
+  scheduleBackendCompileCacheFlush,
+} from "./backendCompileCache";
 
+// First, before anything can start a child process.
+scheduleBackendCompileCacheFlush(releaseBackendCompileCacheEnvironment(process.env));
 initializeDesktopUpdateBridge();
 
 const RuntimeLayer = Layer.empty.pipe(

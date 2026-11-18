@@ -348,7 +348,13 @@ export function ExternalMcpSettingsPanel(props: { active: boolean }) {
           <SettingsRow
             title={t("lattice:accessAllLatticeProjects")}
             description={t("settings:theAgentCanDiscoverAndWorkInEveryProject")}
-            control={<Switch checked={allProjects} onCheckedChange={setAllProjects} />}
+            control={
+              <Switch
+                checked={allProjects}
+                onCheckedChange={setAllProjects}
+                aria-label={t("lattice:accessAllLatticeProjects")}
+              />
+            }
           >
             <DisclosureRegion open={!allProjects} contentClassName="mt-3">
               <div className="grid gap-2 sm:grid-cols-2">
@@ -434,7 +440,7 @@ export function ExternalMcpSettingsPanel(props: { active: boolean }) {
                 <Switch
                   checked={allowLocal}
                   onCheckedChange={setAllowLocal}
-                  aria-label={t("settings:externalPermission_local")}
+                  aria-label={t("settings:useTheSharedLocalCheckout")}
                 />
               </div>
               <div className="flex items-start justify-between gap-4">
@@ -449,7 +455,7 @@ export function ExternalMcpSettingsPanel(props: { active: boolean }) {
                 <Switch
                   checked={allowFullAccess}
                   onCheckedChange={setAllowFullAccess}
-                  aria-label={t("settings:externalPermission_fullAccess")}
+                  aria-label={t("settings:runWithoutApprovalPrompts")}
                 />
               </div>
               <div className="flex items-start justify-between gap-4">
@@ -459,7 +465,11 @@ export function ExternalMcpSettingsPanel(props: { active: boolean }) {
                     {t("lattice:computerControlHighImpact")}
                   </div>
                 </div>
-                <Switch checked={allowComputerControl} onCheckedChange={setAllowComputerControl} />
+                <Switch
+                  checked={allowComputerControl}
+                  onCheckedChange={setAllowComputerControl}
+                  aria-label={t("settings:computerControl")}
+                />
               </div>
             </DisclosureRegion>
           </SettingsRow>

@@ -91,7 +91,6 @@ function Harness(props: {
         provider="claudeAgent"
         model={model}
         lockedProvider={null}
-        boundProviderInstance={null}
         effortControl="menu"
         providers={props.providers}
         modelOptionsByProvider={MODEL_OPTIONS_BY_PROVIDER}

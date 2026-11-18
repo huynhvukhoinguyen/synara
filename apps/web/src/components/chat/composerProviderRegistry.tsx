@@ -71,11 +71,17 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
           ? rawEffort
           : undefined;
       const fastModeEnabled = caps.supportsFastMode && providerOptions?.fastMode === true;
+      const ultrafastRequested = providerOptions?.serviceTier === "ultrafast";
+      const speedOptions = ultrafastRequested
+        ? runtimeModel?.supportsUltrafastMode === true
+          ? { serviceTier: "ultrafast" as const }
+          : { fastMode: false }
+        : fastModeEnabled || providerOptions?.fastMode === false
+          ? { fastMode: fastModeEnabled }
+          : {};
       const nextOptions = {
         ...(reasoningEffort ? { reasoningEffort } : {}),
-        ...(fastModeEnabled || providerOptions?.fastMode === false
-          ? { fastMode: fastModeEnabled }
-          : {}),
+        ...speedOptions,
       };
       normalizedOptions = Object.keys(nextOptions).length > 0 ? nextOptions : undefined;
       break;
@@ -113,7 +119,14 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
     case "antigravity": {
       const providerOptions = modelOptions?.antigravity;
       rawEffort = trimOrNull(providerOptions?.reasoningEffort);
-      normalizedOptions = normalizeAntigravityModelOptions(model, providerOptions, caps);
+      // Antigravity effort ladders come only from discovery, so a missing
+      // ladder is "unknown", not "unsupported": keep an explicit pick for
+      // dispatch instead of silently running the session default, matching
+      // how Codex treats a stored effort before discovery resolves.
+      normalizedOptions =
+        rawEffort && runtimeModel?.supportedReasoningEfforts === undefined
+          ? { reasoningEffort: rawEffort }
+          : normalizeAntigravityModelOptions(model, providerOptions, caps);
       break;
     }
     case "grok": {
@@ -237,7 +250,10 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
                 effort: draftEffort,
                 ...(runtimeModel ? { runtimeModel } : {}),
               }) !== "unsupported"
-            : hasEffortLevel(caps, draftEffort))
+            : provider === "antigravity"
+              ? runtimeModel?.supportedReasoningEfforts === undefined ||
+                hasEffortLevel(caps, draftEffort)
+              : hasEffortLevel(caps, draftEffort))
         ? draftEffort
         : defaultEffort && hasEffortLevel(caps, defaultEffort)
           ? defaultEffort

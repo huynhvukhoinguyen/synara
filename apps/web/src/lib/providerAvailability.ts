@@ -93,6 +93,13 @@ export function providerStatusInstanceKey(
   return status.instanceId ?? status.provider;
 }
 
+/** Statuses keyed by the account (provider instance) they describe. */
+export function providerStatusesByInstance(
+  statuses: readonly ServerProviderStatus[],
+): Map<string, ServerProviderStatus> {
+  return new Map(statuses.map((status) => [providerStatusInstanceKey(status), status]));
+}
+
 // The readiness rule lives in shared so the server's auxiliary model
 // resolution (proofreading, compile repair, Git writing) agrees with it.
 export { isProviderUsable };

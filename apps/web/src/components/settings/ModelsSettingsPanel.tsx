@@ -601,6 +601,7 @@ export function ModelsSettingsPanel({
                 </Select>
                 <Input
                   id="custom-model-slug"
+                  aria-labelledby="setting-saved-model-slugs-title"
                   size="sm"
                   variant="soft"
                   value={selectedCustomModelInput}

@@ -76,6 +76,8 @@ import * as SqlitePersistence from "./persistence/Layers/Sqlite";
 import { ProviderRuntimeEventRepositoryLive } from "./persistence/Layers/ProviderRuntimeEvents";
 import { makeServerApplicationLayers } from "./serverLayers";
 import { startServerMemoryDiagnostics } from "./memoryDiagnostics";
+import { resumeProviderUsageScans, stopProviderUsageScans } from "./providerUsageSnapshot";
+import { resumeProviderUsageReads, stopProviderUsageReads } from "./providerUsage/http";
 import {
   claudeCredentialKeepaliveTargets,
   createClaudeCredentialKeepaliveController,
@@ -89,6 +91,7 @@ import { ServerSettingsService, withoutNewThreadDefaultsOnlyChanges } from "./se
 import { formatHostForUrl, isLoopbackHost, isWildcardHost } from "./startupAccess";
 import { startHostConnectivity } from "./hostConnectivity";
 import { remoteTlsIdentityPath } from "./remoteTransport/certificates";
+import { registerRemoteAccessGrantedWake } from "./hostConnectivitySignals";
 import { superviseHostConnectivity } from "./hostConnectivitySupervisor";
 import { RemoteSessionRegistryService } from "./remoteSessions/sessionRegistry";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine";
@@ -514,11 +517,28 @@ const makeServerProgram = (input: CliInput) =>
           accountUrl: billingAuthority,
           required: config.remoteBillingPolicyRequired === true,
           remoteSessions,
+          // Without an auth token, a loopback server lets each local request in
+          // only while the policy is off (isLegacyTokenAuthorized), so it keeps polling.
+          pollWhileIdle: !config.authToken && isLoopbackHost(config.host) && !config.publicUrl,
         }),
       );
       yield* Effect.addFinalizer(() => Effect.promise(() => policy.stop()));
     }
     yield* Effect.sync(() => startServerMemoryDiagnostics({ mode: config.mode }));
+    // Usage snapshots read local archives, and live usage reads call the provider, in
+    // promises that no request owns. Stop them on shutdown, and refuse new ones from then
+    // on, so they do not hold the process open after the server has closed.
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        resumeProviderUsageScans();
+        resumeProviderUsageReads();
+      }),
+      () =>
+        Effect.sync(() => {
+          stopProviderUsageScans();
+          stopProviderUsageReads();
+        }),
+    );
 
     if (!config.devUrl && !config.staticDir) {
       yield* Effect.logWarning(
@@ -559,10 +579,23 @@ const makeServerProgram = (input: CliInput) =>
         Effect.catch((cause) =>
           Effect.logWarning("Host connectivity supervisor did not start.", {
             cause: String(cause),
-          }).pipe(Effect.as({ reconcile: () => Promise.resolve(), stop: async () => {} })),
+          }).pipe(
+            Effect.as({
+              reconcile: () => Promise.resolve(),
+              wakeAfterRefusal: () => {},
+              stop: async () => {},
+            }),
+          ),
         ),
       );
-      yield* Effect.addFinalizer(() => Effect.promise(() => hostConnectivity.stop()));
+      // A billing read showing remote access granted lets a refused host retry its start.
+      registerRemoteAccessGrantedWake(hostConnectivity.wakeAfterRefusal);
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => {
+          registerRemoteAccessGrantedWake(undefined);
+          return hostConnectivity.stop();
+        }),
+      );
     }
 
     const localUrl = `http://localhost:${config.port}`;
@@ -610,6 +643,10 @@ const makeServerProgram = (input: CliInput) =>
         completionPreviewTrust: {
           remoteTrust,
           tlsIdentityPath: remoteTlsIdentityPath(config.secretsDir),
+        },
+        remoteSessions: {
+          open: () => remoteSessions.size > 0,
+          onOpened: (listener) => remoteSessions.onRemoteConnectionOpened(listener),
         },
         ...(config.devUrl ? { devUrl: config.devUrl } : {}),
       });

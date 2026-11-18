@@ -56,7 +56,9 @@ interface ChatTranscriptPaneProps {
   activeThreadId: string;
   activeTurnId?: TurnId | null;
   activeTurnInProgress: boolean;
-  subagentsRunning?: boolean;
+  /** Subagent rows with a child still at work, shown at the end of their answer. */
+  liveSubagentRunEntryIds?: ReadonlySet<string>;
+  pinLiveBackgroundTasks?: boolean;
   /** What the transcript's subagent cards read from the chat (child threads, controls). */
   subagentRun?: Omit<SubagentRunContextValue, "visibility"> | null;
   /** The newest card with subagents at work; drives the floating "N running" chip. */
@@ -119,7 +121,6 @@ interface ChatTranscriptPaneProps {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onOpenThread: (threadId: ThreadId) => void;
   onOpenAutomation?: ComponentProps<typeof MessagesTimeline>["onOpenAutomation"];
-  onStopBackgroundTask?: ComponentProps<typeof MessagesTimeline>["onStopBackgroundTask"];
   computerControlEnabled?: ComponentProps<typeof MessagesTimeline>["computerControlEnabled"];
   onEnableComputerControl?: ComponentProps<typeof MessagesTimeline>["onEnableComputerControl"];
   onSelectFollowUp?: ComponentProps<typeof MessagesTimeline>["onSelectFollowUp"];
@@ -169,7 +170,8 @@ export function ChatTranscriptPane({
   activeThreadId,
   activeTurnId,
   activeTurnInProgress,
-  subagentsRunning,
+  liveSubagentRunEntryIds,
+  pinLiveBackgroundTasks,
   subagentRun,
   runningSubagentRun,
   subagentThread,
@@ -225,7 +227,6 @@ export function ChatTranscriptPane({
   onOpenTurnDiff,
   onOpenThread,
   onOpenAutomation,
-  onStopBackgroundTask,
   computerControlEnabled,
   onEnableComputerControl,
   onSelectFollowUp,
@@ -409,7 +410,6 @@ export function ChatTranscriptPane({
             <MessagesTimeline
               key={activeThreadId}
               heightCacheScope={activeThreadId}
-              {...(onStopBackgroundTask ? { onStopBackgroundTask } : {})}
               subagentThread={subagentThread ?? null}
               historyHeader={
                 importedHistory.nextCursor || importedHistory.error || importedHistory.loading ? (
@@ -426,7 +426,8 @@ export function ChatTranscriptPane({
               {...(onResolveWorktreeSetup ? { onResolveWorktreeSetup } : {})}
               activeTurnId={activeTurnId ?? null}
               activeTurnInProgress={activeTurnInProgress}
-              subagentsRunning={subagentsRunning === true}
+              {...(liveSubagentRunEntryIds ? { liveSubagentRunEntryIds } : {})}
+              {...(pinLiveBackgroundTasks ? { pinLiveBackgroundTasks } : {})}
               collapseFinishedTurns={collapseFinishedTurns !== false}
               activeTurnStartedAt={activeTurnStartedAt}
               listRef={listRef}

@@ -321,6 +321,7 @@
   "instructions": "操作指令",
   "internalName": "内部名称：{{internalName}}",
   "interrupted": "{{count}} 个已中断",
+  "interruptedSingle": "已中断",
   "isAvailableAgain": "{{skillName}} 已恢复可用。",
   "isClosedWithoutBeingMerged": "#{{number}} 已关闭，没有合并。",
   "isDownloadedSeparatelyToKeepTheApp": "为了让应用保持小巧，{{provider}} 需单独下载。下载一次后即可离线使用。",
@@ -949,5 +950,16 @@
   "usageAnalyticsNoteClaudeRetention": "除非另行设置，Claude Code 会在 30 天后删除会话文件，因此较早的 Claude 用量可能缺失。",
   "usageAnalyticsTotal": "合计",
   "usageAnalyticsHideProvider": "隐藏 {{provider}}",
-  "usageAnalyticsShowProvider": "显示 {{provider}}"
+  "usageAnalyticsShowProvider": "显示 {{provider}}",
+  "defaultProviderResetLabel": "默认提供商",
+  "providerUsedForNewChatsUntilYouPickA": "在你选择模型之前，新聊天使用此提供商。之后的新聊天会沿用最近使用的模型和选项。",
+  "providerHealthBanner_signInBody": "{{provider}} 已安装但尚未登录。在这里登录，Lattice 会为你打开登录页面，无需使用终端。",
+  "signInHereNoTerminalNeeded": "在这里登录，Lattice 会为你打开登录页面，无需使用终端。",
+  "usageLimit_cardArmed": "限额重置后，Lattice 会在这台电脑上继续这个任务。不会丢失任何内容。",
+  "signInFlow_bodyBrowser": "在打开的页面中登录并批准访问。Lattice 会自动连接。",
+  "signInFlow_bodyFailed": "Lattice 无法启动 {{provider}} 的登录。下方的技术详情显示了错误。",
+  "signInFlow_bodyUnverified": "{{provider}} 不会告诉 Lattice 账号是否已登录。如果你已完成它的步骤，就可以了。",
+  "signInFlow_stepReady": "{{provider}} 已在 Lattice 中就绪",
+  "chatContextUsesTheNewAccountSAllowance": "聊天上下文会使用新账号的额度。",
+  "navGroup_lattice": "Lattice"
 }

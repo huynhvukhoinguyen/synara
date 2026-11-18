@@ -31,13 +31,14 @@ describe("ChatMarkdown table layout", () => {
   });
 
   it("scrolls a wide table instead of squeezing its columns to the panel width", async () => {
+    document.documentElement.dataset.synaraEmbed = "true";
     await render(
       <div style={{ width: 280 }}>
         <ChatMarkdown text={WIDE_TABLE} cwd={undefined} isStreaming={false} />
       </div>,
     );
 
-    const scrollRegion = document.querySelector<HTMLElement>(".chat-markdown-table-scroll");
+    const scrollRegion = document.querySelector<HTMLElement>(".chat-markdown-table__scroll");
     const cells = [
       ...document.querySelectorAll<HTMLElement>(".chat-markdown th, .chat-markdown td"),
     ];
@@ -57,7 +58,7 @@ describe("ChatMarkdown table layout", () => {
       </div>,
     );
 
-    const scrollRegion = document.querySelector<HTMLElement>(".chat-markdown-table-scroll");
+    const scrollRegion = document.querySelector<HTMLElement>(".chat-markdown-table__scroll");
     expect(scrollRegion).not.toBeNull();
     expect(window.getComputedStyle(scrollRegion!).paddingBottom).toBe("4px");
 
@@ -89,7 +90,7 @@ describe("ChatMarkdown table layout", () => {
     });
     const transcript = document.querySelector<HTMLElement>("[data-testid='transcript']")!;
     const scrollers = [
-      document.querySelector<HTMLElement>(".chat-markdown-table-scroll")!,
+      document.querySelector<HTMLElement>(".chat-markdown-table__scroll")!,
       document.querySelector<HTMLElement>(".chat-markdown pre.shiki")!,
       document.querySelector<HTMLElement>(".chat-markdown .katex-display")!,
     ];

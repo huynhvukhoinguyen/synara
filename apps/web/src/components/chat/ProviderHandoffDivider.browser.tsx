@@ -3,11 +3,14 @@
 // names to nothing and running the effort labels past the row.
 import "../../index.css";
 
+import { DEFAULT_SERVER_SETTINGS_VIEW } from "@synara/contracts";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 import { setLanguagePreference } from "../../i18n";
+import { serverQueryKeys } from "../../lib/serverReactQuery";
 import type { ProviderHandoffInfo } from "../../workLog";
 import { ProviderHandoffDivider } from "./ProviderHandoffDivider";
 
@@ -53,10 +56,15 @@ describe("ProviderHandoffDivider", () => {
   for (const width of [220, 260, 600]) {
     it(`keeps both model names readable and inside the row at ${width}px`, async () => {
       await page.viewport(width, 600);
+      // The divider reads app settings to name each account.
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      client.setQueryData(serverQueryKeys.settings(), DEFAULT_SERVER_SETTINGS_VIEW);
       const screen = await render(
-        <div className="px-4">
-          <ProviderHandoffDivider info={INFO} />
-        </div>,
+        <QueryClientProvider client={client}>
+          <div className="px-4">
+            <ProviderHandoffDivider info={INFO} />
+          </div>
+        </QueryClientProvider>,
       );
       unmount = () => screen.unmount();
       await expect.element(page.getByText("上下文移交")).toBeVisible();

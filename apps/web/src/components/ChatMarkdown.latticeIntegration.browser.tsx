@@ -58,14 +58,14 @@ it("preserves Lattice math, table scrolling and host links while prose streams",
   await expect.poll(() => document.querySelector(".katex")).not.toBeNull();
   await screen.getByRole("button", { name: "Enable soft wrap" }).click();
   const code = document.querySelector(".chat-markdown-codeblock");
-  const table = document.querySelector<HTMLElement>(".chat-markdown-table-scroll")!;
+  const table = document.querySelector<HTMLElement>(".chat-markdown-table__scroll")!;
   expect(table.scrollWidth).toBeGreaterThan(table.clientWidth);
   table.scrollLeft = table.scrollWidth - table.clientWidth;
   const scrollLeft = table.scrollLeft;
   await screen.rerender(view(`${text} 新增内容不应重置代码块或表格。`));
   expect(document.querySelector(".chat-markdown-codeblock")).toBe(code);
   expect(code?.getAttribute("data-wrap")).toBe("true");
-  expect(document.querySelector(".chat-markdown-table-scroll")).toBe(table);
+  expect(document.querySelector(".chat-markdown-table__scroll")).toBe(table);
   expect(table.scrollLeft).toBe(scrollLeft);
   await screen.getByRole("link", { name: "研究资料" }).click();
   expect(host.openExternalLink).toHaveBeenCalledExactlyOnceWith("https://example.com/research");

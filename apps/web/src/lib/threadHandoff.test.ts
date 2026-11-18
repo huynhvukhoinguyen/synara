@@ -16,7 +16,6 @@ import type { Thread } from "../types";
 import {
   buildThreadHandoffImportedActivities,
   buildThreadHandoffImportedMessages,
-  canContinueThreadHandoff,
   deriveBlockedProviderHandoff,
   ProviderHandoffBackgroundTasksError,
   resolveAvailableHandoffTargets,
@@ -185,16 +184,6 @@ describe("threadHandoff", () => {
         "Claude still has background tasks running in this thread, so it cannot switch to Codex yet.",
       );
     });
-  });
-
-  it("continues in the same thread only when the provider changes", () => {
-    expect(
-      canContinueThreadHandoff({ sourceProvider: "codex", targetProvider: "claudeAgent" }),
-    ).toBe(true);
-    // Another account of the same provider still needs a new thread.
-    expect(canContinueThreadHandoff({ sourceProvider: "codex", targetProvider: "codex" })).toBe(
-      false,
-    );
   });
 
   const readyStatus = (

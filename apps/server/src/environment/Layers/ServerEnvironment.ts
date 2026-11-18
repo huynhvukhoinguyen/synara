@@ -1,5 +1,6 @@
 import {
   accountProfileSyncUnavailableReason,
+  composerPredictionsUnavailableInHost,
   remoteConnectionsUnavailableReason,
 } from "../../remoteFeaturePolicy";
 import { desktopFlavorFromBundleId } from "@synara/shared/betaFeatures";
@@ -106,6 +107,7 @@ export const makeServerEnvironment = Effect.fn(function* () {
       remoteConnections: remoteUnavailableReason === undefined,
       remoteResources: remoteUnavailableReason === undefined,
       ...(remoteUnavailableReason ? { remoteUnavailableReason } : {}),
+      composerPredictions: composerPredictionsUnavailableInHost() === undefined,
     },
     ...(machineId ? { machineId } : {}),
   };

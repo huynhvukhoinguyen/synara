@@ -101,6 +101,7 @@ import { PanelStateMessage } from "./PanelStateMessage";
 import { RightDock } from "./RightDock";
 import { SidechatDockPane, useSidechatDockPanePruning } from "./SidechatDockPane";
 import { SubagentsDockPane } from "./SubagentsDockPane";
+import { BackgroundTasksDockPane } from "./BackgroundTasksDockPane";
 import {
   buildRightDockPaneLabelOverrides,
   getRightDockPaneMeta,
@@ -1117,6 +1118,8 @@ export function SingleChatSurface(props: {
         );
       case "subagents":
         return <SubagentsDockPane hostThreadId={props.threadId} />;
+      case "backgroundTasks":
+        return <BackgroundTasksDockPane hostThreadId={props.threadId} />;
       case "sidechat":
         return (
           <SidechatDockPane

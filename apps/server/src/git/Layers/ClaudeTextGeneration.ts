@@ -21,6 +21,7 @@ import {
   buildAutomationIntentPrompt,
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildComposerPredictionPrompt,
   buildDiffSummaryPrompt,
   buildPrContentPrompt,
   buildProjectDigestPrompt,
@@ -28,6 +29,7 @@ import {
   buildThreadRecapPrompt,
   buildThreadTitlePrompt,
   sanitizeCommitSubject,
+  sanitizeComposerPrediction,
   sanitizeDiffSummary,
   sanitizePrTitle,
   sanitizeThreadRecap,
@@ -467,6 +469,27 @@ const makeClaudeTextGeneration = Effect.gen(function* () {
     } satisfies ThreadRecapGenerationResult;
   });
 
+  const generateComposerPrediction: TextGenerationShape["generateComposerPrediction"] = Effect.fn(
+    "ClaudeTextGeneration.generateComposerPrediction",
+  )(function* (input) {
+    const modelSelection = yield* requireClaudeModelSelection(
+      "generateComposerPrediction",
+      input.modelSelection,
+    );
+    const { prompt, outputSchemaJson } = buildComposerPredictionPrompt({
+      conversation: input.conversation,
+    });
+    const generated = yield* runClaudeJson({
+      operation: "generateComposerPrediction",
+      cwd: input.cwd,
+      prompt,
+      outputSchemaJson,
+      modelSelection,
+      ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
+    });
+    return { suggestion: sanitizeComposerPrediction(generated.suggestion) };
+  });
+
   const generateProjectDigest: TextGenerationShape["generateProjectDigest"] = Effect.fn(
     "ClaudeTextGeneration.generateProjectDigest",
   )(function* (input) {
@@ -555,6 +578,7 @@ const makeClaudeTextGeneration = Effect.gen(function* () {
     generateBranchName,
     generateThreadTitle,
     generateThreadRecap,
+    generateComposerPrediction,
     generateProjectDigest,
     generateAutomationIntent,
     evaluateAutomationCompletion,

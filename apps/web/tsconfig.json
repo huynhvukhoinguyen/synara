@@ -21,5 +21,15 @@
       }
     ]
   },
-  "include": ["src", "perf", "scripts/production-assets*.ts", "vite.config.ts"]
+  "include": [
+    "src",
+    "perf",
+    "scripts/production-assets*.ts",
+    "scripts/transform-cache*.ts",
+    "scripts/parallel-transform*.ts",
+    "scripts/react-compiler-plugin.d.mts",
+    "scripts/settingsSearchRows.ts",
+    "scripts/generate-settings-search-rows.ts",
+    "vite.config.ts"
+  ]
 }

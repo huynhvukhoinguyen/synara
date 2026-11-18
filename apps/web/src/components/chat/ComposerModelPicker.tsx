@@ -40,6 +40,8 @@ import { starredModelInstanceId, starredModelSlotKey } from "~/lib/starredModels
 import { cn, isMacNavigatorPlatform } from "~/lib/utils";
 import { ProviderAccountAvatar } from "../ProviderAccountMark";
 import { ProviderRuntimeInstallPanel } from "../ProviderRuntimeInstall";
+import { ProviderGuidedSignIn } from "../settings/accounts/ProviderGuidedSignIn";
+import type { ProviderSignInAccount } from "../settings/accounts/providerAccountShared";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Menu, MenuGroup, MenuGroupLabel } from "../ui/menu";
@@ -115,12 +117,6 @@ type ComposerModelPickerProps = {
   provider: ProviderKind;
   model: ModelSlug;
   lockedProvider: ProviderKind | null;
-  // Set when other providers are open for a same-thread handoff: the thread's
-  // own provider still cannot switch to a sibling account.
-  boundProviderInstance?: {
-    readonly provider: ProviderKind;
-    readonly instanceId: ProviderInstanceId;
-  } | null;
   providers?: ReadonlyArray<ServerProviderStatus>;
   modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<ProviderModelOption>>;
   loadingModelProviders?: Partial<Record<ProviderKind, boolean>>;
@@ -153,6 +149,9 @@ type ComposerModelPickerProps = {
   runtimeModel?: ProviderModelDescriptor | undefined;
   runtimeModelsByProvider?: Partial<
     Record<ProviderKind, ReadonlyArray<ProviderModelDescriptor> | null | undefined>
+  >;
+  runtimeModelsByProviderInstance?: Partial<
+    Record<ProviderInstanceId, ReadonlyArray<ProviderModelDescriptor>>
   >;
   runtimeAgents?: ReadonlyArray<ProviderAgentDescriptor> | null | undefined;
   modelOptions: ProviderModelOptions[ProviderKind] | undefined;
@@ -194,7 +193,7 @@ function groupRowElements(
 export function ComposerModelPicker(props: ComposerModelPickerProps) {
   const { t } = useTranslation();
 
-  const { onOpenChange, open, lockedProvider, threadId } = props;
+  const { onOpenChange, onRefreshModels, open, lockedProvider, threadId } = props;
   const localizeLabel = (label: string) => localizeModelPickerLabel(t, label);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const isMenuOpen = open ?? uncontrolledOpen;
@@ -237,10 +236,6 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
     if (knownInstances?.some((instance) => instance.instanceId === instanceId && !instance.enabled))
       return false;
     if (lockedProvider !== null && instanceId !== activeInstanceId) return false;
-    const bound = props.boundProviderInstance;
-    if (bound && entry.provider === bound.provider && instanceId !== bound.instanceId) {
-      return false;
-    }
     return (
       instanceId === entry.provider ||
       knownInstances === undefined ||
@@ -289,7 +284,12 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
       : (draftSelectionByProvider?.[provider]?.options ??
         stickySelectionByProvider[provider]?.options);
   const promptFor = (provider: ProviderKind) => (provider === props.provider ? props.prompt : "");
-  const traitSelectionFor = (provider: ProviderKind, model: string) =>
+  const runtimeModelsFor = (provider: ProviderKind, instanceId: string) =>
+    provider === "codex"
+      ? (props.runtimeModelsByProviderInstance?.[instanceId as ProviderInstanceId] ??
+        (instanceId === activeInstanceId ? props.runtimeModelsByProvider?.codex : undefined))
+      : props.runtimeModelsByProvider?.[provider];
+  const traitSelectionFor = (provider: ProviderKind, model: string, instanceId: string) =>
     getComposerTraitSelection(
       provider,
       model,
@@ -298,7 +298,7 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
       resolveRuntimeModelDescriptor({
         provider,
         model,
-        runtimeModels: props.runtimeModelsByProvider?.[provider],
+        runtimeModels: runtimeModelsFor(provider, instanceId),
       }),
       t,
     );
@@ -356,12 +356,7 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
         : visibleProviderOptions,
     providers: props.providers,
     providerInstances: props.providerInstances,
-    lockedInstanceId:
-      lockedProvider !== null
-        ? activeInstanceId
-        : (props.boundProviderInstance?.instanceId ?? null),
-    lockedInstanceProvider:
-      lockedProvider === null ? (props.boundProviderInstance?.provider ?? null) : null,
+    lockedInstanceId: lockedProvider !== null ? activeInstanceId : null,
   });
   const activeProviderTab = providerTabs.find(
     (providerTab) => providerTab.instanceId === activeInstanceId,
@@ -398,6 +393,25 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
     codexNeedsUpdateForAstra(tabAccount.provider, tabVersion)
       ? t("lattice:codexUpdateForAstra", { version: CODEX_ASTRA_MINIMUM_VERSION })
       : null;
+  // Load only the accounts represented in Starred, after the picker opens.
+  const starredAccounts =
+    isMenuOpen && tab === STARRED_TAB
+      ? providerTabs.filter(
+          (account) =>
+            !account.blocked &&
+            !account.setupMessage &&
+            usableStarredModels.some(
+              (entry) =>
+                entry.provider === account.provider &&
+                starredModelInstanceId(entry) === account.instanceId,
+            ),
+        )
+      : [];
+
+  // Signing in stays in the composer: the same isolated login Settings runs. It mounts
+  // beside the menu, which closes as soon as the sign-in window takes focus.
+  const [signInAccount, setSignInAccount] = useState<ProviderSignInAccount | null>(null);
+
   const openProviderSettings = () => {
     setMenuOpen(false);
     // Inside Lattice, in-frame `/settings` would replace the Agent panel; the host opens it.
@@ -470,9 +484,16 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
               model: props.model,
               ...resolveStarredTraits(currentTraitSelection),
             },
-            effortLevelsFor: (provider, model) => traitSelectionFor(provider, model).effortLevels,
+            effortLevelsFor: (provider, model, instanceId) =>
+              traitSelectionFor(provider, model, instanceId).effortLevels,
             localizeLabel,
             unavailableModelLabelFor,
+            supportsUltrafastFor: (model, instanceId) =>
+              resolveRuntimeModelDescriptor({
+                provider: "codex",
+                model,
+                runtimeModels: runtimeModelsFor("codex", instanceId),
+              })?.supportsUltrafastMode === true,
           })
         : buildProviderTabRows({
             provider: tabAccount.provider,
@@ -524,12 +545,11 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
     const model = row.selectableModel;
     if (model === null) return;
 
-    const selection = traitSelectionFor(row.provider, model);
+    const selection = traitSelectionFor(row.provider, model, row.instanceId ?? row.provider);
     // Slider mode: switching to a model with an effort ladder keeps the panel open so the
-    // footer slider can set its effort. Presets already carry their effort, and picking
-    // the current model again is the "done" gesture, so both close.
-    const keepOpen =
-      usesEffortSlider && row.preset === null && !row.selected && selection.effortLevels.length > 0;
+    // footer slider can adjust its effort, including after a preset is applied.
+    // Picking the current selection again is the "done" gesture.
+    const keepOpen = usesEffortSlider && !row.selected && selection.effortLevels.length > 0;
     commitRow(
       row,
       model,
@@ -546,7 +566,7 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
     if (props.disabled || model === null) return;
     const plan = planComposerEffortChange({
       provider: row.provider,
-      selection: traitSelectionFor(row.provider, model),
+      selection: traitSelectionFor(row.provider, model, row.instanceId ?? row.provider),
       prompt: promptFor(row.provider),
       value,
     });
@@ -708,16 +728,35 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
                   />
                 ) : null}
                 <span className="text-ui font-medium text-foreground">
-                  {openProviderTab
-                    ? t("lattice:needsSetup", { account: openProviderTab.label })
-                    : t("lattice:thisAccountNeedsSetup")}
+                  {openProviderTab?.needsSignIn
+                    ? t("settings:signInTo2", { value0: openProviderTab.label })
+                    : openProviderTab
+                      ? t("lattice:needsSetup", { account: openProviderTab.label })
+                      : t("lattice:thisAccountNeedsSetup")}
                 </span>
                 <span className="text-ui-sm leading-snug text-muted-foreground">
                   {setupMessage}
                 </span>
-                <Button type="button" size="xs" variant="outline" onClick={openProviderSettings}>
-                  {t("chat:openProviderSetup")}
-                </Button>
+                {openProviderTab?.needsSignIn ? (
+                  <Button
+                    type="button"
+                    size="xs"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setSignInAccount({
+                        provider: openProviderTab.provider,
+                        instanceId: openProviderTab.instanceId,
+                        label: openProviderTab.label,
+                      });
+                    }}
+                  >
+                    {t("chat:providerModelPicker_signIn")}
+                  </Button>
+                ) : (
+                  <Button type="button" size="xs" variant="outline" onClick={openProviderSettings}>
+                    {t("chat:openProviderSetup")}
+                  </Button>
+                )}
               </div>
             ) : discoveryError ? (
               <div className="px-2 py-1.5 text-ui leading-snug text-destructive">
@@ -756,7 +795,7 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
                         : null
                     }
                     providerOptions={providerOptionsFor(row.provider)}
-                    runtimeModels={props.runtimeModelsByProvider?.[row.provider]}
+                    runtimeModels={runtimeModelsFor(row.provider, row.instanceId ?? row.provider)}
                     prompt={promptFor(row.provider)}
                     starredModelSlots={starredModelSlots}
                     onSelect={selectRow}
@@ -777,14 +816,24 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
               </div>
             )}
           </div>
-          {isMenuOpen && tabAccount && !setupMessage && props.onRefreshModels ? (
+          {isMenuOpen && tabAccount && !setupMessage && onRefreshModels ? (
             <ModelCatalogRefresh
               key={tabAccount.instanceId}
               provider={tabAccount.provider}
               instanceId={tabAccount.instanceId}
-              onRefresh={props.onRefreshModels}
+              onRefresh={onRefreshModels}
             />
           ) : null}
+          {onRefreshModels &&
+            starredAccounts.map((account) => (
+              <ModelCatalogRefresh
+                key={account.instanceId}
+                provider={account.provider}
+                instanceId={account.instanceId}
+                onRefresh={onRefreshModels}
+                silent
+              />
+            ))}
           <ComposerModelPickerTraitRows
             provider={props.provider}
             providerInstanceId={props.selectedProviderInstanceId}
@@ -800,6 +849,14 @@ export function ComposerModelPicker(props: ComposerModelPickerProps) {
           />
         </div>
       </ComposerPickerMenuPopup>
+      {/* Rendered by the menu root, so it survives the popup closing. */}
+      {signInAccount ? (
+        <ProviderGuidedSignIn
+          key={String(signInAccount.instanceId)}
+          account={signInAccount}
+          onClosed={() => setSignInAccount(null)}
+        />
+      ) : null}
     </Menu>
   );
 }

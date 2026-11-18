@@ -29,11 +29,11 @@ export function DefaultProviderSettingsRow({
     <SettingsRow
       id="setting-default-provider"
       title="settings:changed_defaultProvider"
-      description="settings:providerUsedForNewChatsUntilYouPickA"
+      description="lattice:providerUsedForNewChatsUntilYouPickA"
       resetAction={
         settings.defaultProvider !== defaults.defaultProvider ? (
           <SettingResetButton
-            label={t("settings:defaultProvider")}
+            label={t("lattice:defaultProviderResetLabel")}
             onClick={() => updateSettings({ defaultProvider: defaults.defaultProvider })}
           />
         ) : null

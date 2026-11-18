@@ -17,6 +17,16 @@ export function synaraAccountUnavailableInHost(): string | undefined {
     : undefined;
 }
 
+/**
+ * Composer follow-up suggestions start a provider model call after each settled turn.
+ * Lattice keeps them off for now, so the panel spends no usage the writer did not ask for.
+ */
+export function composerPredictionsUnavailableInHost(): string | undefined {
+  return resolveAgentHostProfile().id === "lattice"
+    ? "Composer suggestions are not part of Lattice."
+    : undefined;
+}
+
 /** TLS/owner-pairing component and packaged Electron gates passed; release qualification is separate. */
 const REMOTE_V2_QUALIFIED = true;
 

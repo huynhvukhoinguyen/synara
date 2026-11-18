@@ -25,6 +25,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   remoteConnections: Schema.optional(Schema.Boolean),
   remoteResources: Schema.optional(Schema.Boolean),
   remoteUnavailableReason: Schema.optional(TrimmedNonEmptyString),
+  /** Whether `server.generateComposerPrediction` is served; absent on servers that predate it. */
+  composerPredictions: Schema.optional(Schema.Boolean),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   // Lattice's fork: the server may drive the iOS Simulator (absent means it may not).
   deviceControl: Schema.optional(Schema.Boolean),

@@ -14,6 +14,7 @@ import { ServerConfig } from "../../config.ts";
 import {
   createPiModelRuntime,
   DEFAULT_PI_THINKING_LEVEL,
+  importPiRuntimePackage,
   loadPiCodingAgentModule,
   normalizePiThinkingLevel,
   resolvePiSessionModel,
@@ -31,6 +32,7 @@ import {
   buildAutomationCompletionEvaluationPrompt,
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
+  buildComposerPredictionPrompt,
   buildDiffSummaryPrompt,
   buildTextTaskPrompt,
   buildPrContentPrompt,
@@ -39,6 +41,7 @@ import {
   buildThreadTitlePrompt,
   decodeStructuredTextGenerationOutput,
   sanitizeCommitSubject,
+  sanitizeComposerPrediction,
   sanitizeDiffSummary,
   sanitizeThreadRecap,
   sanitizePrTitle,
@@ -103,6 +106,7 @@ async function runPiTextPrompt(
     const modelRuntime = await createPiModelRuntime(
       input.agentDir,
       sdk,
+      importPiRuntimePackage,
       signal,
       input.environment,
       input.instanceId,
@@ -125,6 +129,7 @@ async function runPiTextPrompt(
     const model = await resolvePiSessionModel({
       modelRuntime: services.modelRuntime,
       piSdk: sdk,
+      importPackage: importPiRuntimePackage,
       modelId: input.modelId,
       environment: input.environment,
       instanceId: input.instanceId,
@@ -369,6 +374,16 @@ const makePiTextGeneration = Effect.gen(function* () {
         (generated, input) => ({
           recap: sanitizeThreadRecap(generated.recap, input.previousRecap),
         }),
+      );
+    }),
+    generateComposerPrediction: Effect.fn("PiTextGeneration.generateComposerPrediction")(function* (
+      input: OperationInputOf<"generateComposerPrediction">,
+    ) {
+      return yield* runPiOperation(
+        "generateComposerPrediction",
+        input,
+        (input) => buildComposerPredictionPrompt({ conversation: input.conversation }),
+        (generated) => ({ suggestion: sanitizeComposerPrediction(generated.suggestion) }),
       );
     }),
     generateProjectDigest: Effect.fn("PiTextGeneration.generateProjectDigest")(function* (

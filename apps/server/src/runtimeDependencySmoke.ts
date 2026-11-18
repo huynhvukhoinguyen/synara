@@ -92,13 +92,17 @@ async function verifyOfflineCompactorRuntime(): Promise<void> {
   }
 }
 
-await verifyRemoteTlsRuntime();
-if (process.env.SYNARA_RUNTIME_SMOKE === "remote-tls") process.exit(0);
+const smokeMode = process.env.SYNARA_RUNTIME_SMOKE;
+const piOnly = smokeMode === "pi-absent" || smokeMode === "pi-installed";
+if (!piOnly) {
+  await verifyRemoteTlsRuntime();
+  if (smokeMode === "remote-tls") process.exit(0);
 
-// Keep these imports external, just like the server. Running this entrypoint
-// from app.asar exposes missing peers that the development install can hide.
-await loadAcpSdk();
-await loadClaudeAgentSdk();
+  // Running these external imports from app.asar exposes peers that the
+  // development install can hide.
+  await loadAcpSdk();
+  await loadClaudeAgentSdk();
+}
 // Pi and OpenCode are optional runtimes: a full install loads them here, while a slim
 // host that leaves them out must report them as installable, not crash.
 await refreshProviderRuntimeAvailability();
@@ -230,6 +234,8 @@ if (providerRuntimeAvailability("pi") !== "missing") {
     await rm(root, { recursive: true, force: true });
   }
 }
+if (piOnly) process.exit(0);
+
 await import("open");
 await import("node-pty");
 await import("@xterm/headless");

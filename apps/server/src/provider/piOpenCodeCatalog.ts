@@ -1,8 +1,8 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
-
-import { loadProviderRuntimeModule } from "./providerRuntimes.ts";
 import { outboundHttp, decodeOutboundJson } from "@synara/shared/outboundHttp";
+
+import type { PiPackageImporter } from "./piSdkImports.ts";
 
 const CATALOG_URL = "https://pi.dev/api/models/providers/opencode";
 const INVENTORY_URL = "https://opencode.ai/inference/v1/models";
@@ -91,6 +91,7 @@ export function parsePiOpenCodeCatalog(catalog: unknown, inventory: unknown): Mo
 /** Install before SDK services load extensions, so user registrations still win. */
 export async function refreshPiOpenCodeCatalog(
   runtime: ModelRuntime,
+  importPackage: PiPackageImporter,
   options: {
     signal?: AbortSignal | undefined;
     request?: typeof outboundHttp.request;
@@ -148,8 +149,12 @@ export async function refreshPiOpenCodeCatalog(
     // ModelRuntime composes models.json over this base; extensions load afterward.
     const resolvedModels = models;
     const [{ opencodeProvider }, { isModelType }] = await Promise.all([
-      loadProviderRuntimeModule("@earendil-works/pi-ai/providers/opencode"),
-      loadProviderRuntimeModule("@earendil-works/pi-ai/utils/model-operations"),
+      importPackage<typeof import("@earendil-works/pi-ai/providers/opencode")>(
+        "@earendil-works/pi-ai/providers/opencode",
+      ),
+      importPackage<typeof import("@earendil-works/pi-ai/utils/model-operations")>(
+        "@earendil-works/pi-ai/utils/model-operations",
+      ),
     ]);
     const base = opencodeProvider();
     const otherModels = base.getAllModels?.().filter((model) => !isModelType(model, "chat")) ?? [];

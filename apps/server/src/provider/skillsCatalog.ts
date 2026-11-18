@@ -479,6 +479,8 @@ export interface SkillsCatalogDiscoveryInput {
   /** Optional workspace cwd; when present, project-level skill folders are included. */
   readonly cwd?: string | null;
   readonly homeDir: string;
+  /** Active Claude profile; replaces only the Claude home origin. */
+  readonly claudeConfigDir?: string | undefined;
   /** Synara base dir (usually `~/.synara`); skills live in `{base}/skills`. */
   readonly synaraBaseDir: string;
   /** Provider whose native copies should win when the same skill exists in several roots. */
@@ -1200,7 +1202,9 @@ const SKILL_ORIGIN_ROOTS = {
     projectRootNames: [".codex"],
   },
   claude: {
-    homeRoots: (input) => [nodePath.join(input.homeDir, ".claude", "skills")],
+    homeRoots: (input) => [
+      nodePath.join(input.claudeConfigDir ?? nodePath.join(input.homeDir, ".claude"), "skills"),
+    ],
     projectRootNames: [".claude"],
   },
   cursor: {
@@ -1333,6 +1337,11 @@ function rootsForOrderedOrigins(
     })),
   );
   const homeRootPaths = new Set(homeRoots.map((root) => nodePath.resolve(root.path)));
+  // A profile override replaces the default Claude home even if its path is
+  // seen again while walking the project ancestors.
+  if (input.claudeConfigDir) {
+    homeRootPaths.add(nodePath.resolve(input.homeDir, ".claude", "skills"));
+  }
 
   const projectRoots: SkillRoot[] = [];
   const cwd = input.cwd?.trim();
@@ -1394,6 +1403,7 @@ export async function discoverSkillsCatalog(
     input.cwd?.trim() ?? "",
     input.provider ?? "",
     input.homeDir,
+    input.claudeConfigDir ?? "",
     input.synaraBaseDir,
     bundledSkillsDir() ?? "",
     input.agentDir?.trim() ?? "",
@@ -1419,6 +1429,7 @@ export async function discoverSkillsCatalog(
       ...skillsCatalogRoots(input),
       ...(await discoverClaudePluginSkillRoots({
         homeDir: input.homeDir,
+        ...(input.claudeConfigDir ? { claudeConfigDir: input.claudeConfigDir } : {}),
         ...(input.cwd ? { cwd: input.cwd } : {}),
       })),
     ];

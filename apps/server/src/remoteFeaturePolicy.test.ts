@@ -7,6 +7,7 @@ import {
 import {
   accountLiveActivityEnabled,
   accountProfileSyncUnavailableReason,
+  composerPredictionsUnavailableInHost,
   remoteConnectionsUnavailableReason,
   requireAccountProfileSync,
   synaraAccountUnavailableInHost,
@@ -100,6 +101,16 @@ describe("Lattice host profile", () => {
     expect(accountProfileSyncUnavailableReason()).toBe(reason);
     expect(accountLiveActivityEnabled()).toBe(false);
     expect(() => requireAccountProfileSync()).toThrow(reason);
+  });
+
+  it("keeps composer suggestions, which make model calls, off in Lattice only", () => {
+    vi.stubEnv("AGENT_HOST_PROFILE", "lattice");
+    expect(composerPredictionsUnavailableInHost()).toBe(
+      "Composer suggestions are not part of Lattice.",
+    );
+    vi.stubEnv("AGENT_HOST_PROFILE", undefined);
+    vi.stubEnv("SYNARA_HOST_PROFILE", undefined);
+    expect(composerPredictionsUnavailableInHost()).toBeUndefined();
   });
 
   it("leaves the upstream policy to the standalone host", () => {

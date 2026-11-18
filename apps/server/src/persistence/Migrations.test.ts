@@ -22,6 +22,7 @@ import ForkSourceMessageMigration from "./Migrations/134_ProjectionThreadsForkSo
 import WorkspaceInitializationMigration from "./Migrations/133_ProjectionTurnsWorkspaceInitialization.ts";
 import UsageLimitRecoveryMigration from "./Migrations/141_ProjectionThreadsUsageLimitRecovery.ts";
 import SpacesMigration from "./Migrations/079_Spaces.ts";
+import { SqlitePersistenceMemory } from "./Layers/Sqlite.ts";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
@@ -29,6 +30,38 @@ const trackerRows = (sql: SqlClient.SqlClient) =>
   sql<{ readonly migration_id: number; readonly name: string }>`
     SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id ASC
   `;
+
+it.effect("gives warmed in-memory clients the migrated schema and independent state", () =>
+  Effect.gen(function* () {
+    const readSchema = Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      return {
+        schema: yield* sql.unsafe("SELECT type, name, sql FROM sqlite_schema ORDER BY type, name"),
+        migrations: yield* trackerRows(sql),
+        foreignKeys: yield* sql.unsafe("PRAGMA foreign_keys"),
+        sequences: yield* sql.unsafe("SELECT name, seq FROM sqlite_sequence ORDER BY name, seq"),
+        commandCursors: yield* sql.unsafe(
+          "SELECT consumer_name, last_acked_sequence FROM orchestration_consumer_state ORDER BY consumer_name",
+        ),
+        runtimeCursors: yield* sql.unsafe(
+          "SELECT consumer_name, last_acked_sequence FROM provider_runtime_event_consumers ORDER BY consumer_name",
+        ),
+      };
+    });
+    const migrated = yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql.unsafe("PRAGMA foreign_keys = ON");
+      yield* runMigrations();
+      return yield* readSchema;
+    }).pipe(Effect.provide(NodeSqliteClient.layerMemory()));
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql.unsafe("CREATE TABLE snapshot_isolation_probe (id INTEGER PRIMARY KEY)");
+    }).pipe(Effect.provide(Layer.fresh(SqlitePersistenceMemory)));
+    const replayed = yield* readSchema.pipe(Effect.provide(Layer.fresh(SqlitePersistenceMemory)));
+    assert.deepStrictEqual(replayed, migrated);
+  }),
+);
 
 const projectionThreadsColumnNames = (sql: SqlClient.SqlClient) =>
   sql<{ readonly name: string }>`
@@ -158,7 +191,7 @@ layer("reconcileMigrationLineage", (it) => {
       const executed = yield* runMigrations();
       assert.deepStrictEqual(
         executed.map(([id]) => id),
-        [136, 137, 138, 139, 140, 141, 142, 143],
+        [136, 137, 138, 139, 140, 141, 142, 143, 144],
       );
       assert.deepStrictEqual(yield* read(), before);
       assert.deepStrictEqual(
@@ -760,6 +793,7 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [141, "ProjectionThreadsUsageLimitRecovery"],
         [142, "AuthAccessOrigin"],
         [143, "UsageAnalyticsDeletedTokens"],
+        [144, "ProjectionThreadsPullRequestLinks"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -855,6 +889,7 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
           { migration_id: 141, name: "ProjectionThreadsUsageLimitRecovery" },
           { migration_id: 142, name: "AuthAccessOrigin" },
           { migration_id: 143, name: "UsageAnalyticsDeletedTokens" },
+          { migration_id: 144, name: "ProjectionThreadsPullRequestLinks" },
         ],
       );
       const groupConfigColumns = yield* sql<{ readonly name: string }>`
@@ -1030,6 +1065,7 @@ agentGatewayRetentionLegacyLayer(
           [141, "ProjectionThreadsUsageLimitRecovery"],
           [142, "AuthAccessOrigin"],
           [143, "UsageAnalyticsDeletedTokens"],
+          [144, "ProjectionThreadsPullRequestLinks"],
         ]);
 
         const columns = yield* sql<{ readonly name: string }>`
@@ -1168,6 +1204,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [141, "ProjectionThreadsUsageLimitRecovery"],
         [142, "AuthAccessOrigin"],
         [143, "UsageAnalyticsDeletedTokens"],
+        [144, "ProjectionThreadsPullRequestLinks"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -1247,6 +1284,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [141, "ProjectionThreadsUsageLimitRecovery"],
           [142, "AuthAccessOrigin"],
           [143, "UsageAnalyticsDeletedTokens"],
+          [144, "ProjectionThreadsPullRequestLinks"],
         ],
       );
 
@@ -1380,6 +1418,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [141, "ProjectionThreadsUsageLimitRecovery"],
         [142, "AuthAccessOrigin"],
         [143, "UsageAnalyticsDeletedTokens"],
+        [144, "ProjectionThreadsPullRequestLinks"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -1455,6 +1494,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [141, "ProjectionThreadsUsageLimitRecovery"],
           [142, "AuthAccessOrigin"],
           [143, "UsageAnalyticsDeletedTokens"],
+          [144, "ProjectionThreadsPullRequestLinks"],
         ],
       );
       const preservedSpaces = yield* sql<{ readonly spaceId: string }>`

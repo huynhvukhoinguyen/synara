@@ -24,6 +24,7 @@ import {
 } from "@synara/contracts";
 import { sanitizeGeneratedThreadTitle } from "@synara/shared/chatThreads";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@synara/shared/git";
+import { getModelSelectionStringOptionValue } from "@synara/shared/model";
 
 import {
   hydrateCodexProviderCredentialEnvironment,
@@ -43,6 +44,7 @@ import {
   type BranchNameGenerationInput,
   type BranchNameGenerationResult,
   type CommitMessageGenerationResult,
+  type ComposerPredictionGenerationResult,
   type DiffSummaryGenerationResult,
   type PrContentGenerationResult,
   type ThreadTitleGenerationResult,
@@ -56,6 +58,7 @@ import {
   buildAutomationIntentPrompt,
   buildAutomationCompletionEvaluationPrompt,
   buildCommitMessagePrompt,
+  buildComposerPredictionPrompt,
   buildDiffSummaryPrompt,
   buildTextTaskPrompt,
   buildPrContentPrompt,
@@ -63,6 +66,7 @@ import {
   buildProjectDigestPrompt,
   buildThreadTitlePrompt,
   sanitizeCommitSubject,
+  sanitizeComposerPrediction,
   sanitizeDiffSummary,
   sanitizeThreadRecap,
   sanitizePrTitle,
@@ -543,6 +547,7 @@ const makeCodexTextGeneration = Effect.gen(function* () {
     model,
     modelSelection,
     providerOptions,
+    reasoningEffort,
   }: {
     operation: TextGenerationOperation;
     cwd: string;
@@ -552,6 +557,8 @@ const makeCodexTextGeneration = Effect.gen(function* () {
     model?: string;
     modelSelection?: BranchNameGenerationInput["modelSelection"];
     providerOptions?: BranchNameGenerationInput["providerOptions"];
+    /** Overrides the Git-writing default effort; only plain effort identifiers are accepted. */
+    reasoningEffort?: string | undefined;
   }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -708,7 +715,7 @@ const makeCodexTextGeneration = Effect.gen(function* () {
             selectedModel,
             ...buildCodexTextGenerationCliConfigArgs(isolatedCodexHome.modelCatalogPath),
             "--config",
-            `model_reasoning_effort="${DEFAULT_GIT_TEXT_GENERATION_REASONING_EFFORT}"`,
+            `model_reasoning_effort="${resolveCodexReasoningEffort(reasoningEffort)}"`,
             "--output-schema",
             schemaPath,
             "--output-last-message",
@@ -944,6 +951,33 @@ const makeCodexTextGeneration = Effect.gen(function* () {
     );
   };
 
+  const generateComposerPrediction: TextGenerationShape["generateComposerPrediction"] = (input) => {
+    const { prompt, outputSchemaJson } = buildComposerPredictionPrompt({
+      conversation: input.conversation,
+    });
+
+    return runCodexJson({
+      operation: "generateComposerPrediction",
+      cwd: input.cwd,
+      prompt,
+      outputSchemaJson,
+      ...(input.codexHomePath ? { codexHomePath: input.codexHomePath } : {}),
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+      ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
+      // Predictions run at the effort the caller routed (the selected model's
+      // lowest); other operations keep the Git-writing default.
+      reasoningEffort: getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort"),
+    }).pipe(
+      Effect.map(
+        (generated) =>
+          ({
+            suggestion: sanitizeComposerPrediction(generated.suggestion),
+          }) satisfies ComposerPredictionGenerationResult,
+      ),
+    );
+  };
+
   const generateProjectDigest: TextGenerationShape["generateProjectDigest"] = (input) => {
     const { prompt, outputSchemaJson } = buildProjectDigestPrompt({
       ...(input.previousSummary ? { previousSummary: input.previousSummary } : {}),
@@ -1021,6 +1055,7 @@ const makeCodexTextGeneration = Effect.gen(function* () {
     generateBranchName,
     generateThreadTitle,
     generateThreadRecap,
+    generateComposerPrediction,
     generateProjectDigest,
     generateAutomationIntent,
     evaluateAutomationCompletion,
@@ -1056,6 +1091,17 @@ function resolveCodexAccountId(
 ): string | undefined {
   const resolved = providerOptions?.codex?.accountId?.trim();
   return resolved && resolved.length > 0 ? resolved : undefined;
+}
+
+const CODEX_REASONING_EFFORT_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/iu;
+
+// The value is interpolated into a TOML string passed on the command line, so
+// anything but a plain effort identifier falls back to the Git-writing default.
+function resolveCodexReasoningEffort(reasoningEffort: string | undefined): string {
+  const trimmed = reasoningEffort?.trim();
+  return trimmed && CODEX_REASONING_EFFORT_PATTERN.test(trimmed)
+    ? trimmed
+    : DEFAULT_GIT_TEXT_GENERATION_REASONING_EFFORT;
 }
 
 function resolveCodexModel(
