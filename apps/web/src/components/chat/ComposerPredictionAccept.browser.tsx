@@ -30,16 +30,18 @@ import { useChatTranscriptScroll } from "./useChatTranscriptScroll";
 import { useComposerSingleRow } from "./useComposerSingleRow";
 
 const nativeApi = vi.hoisted(() => ({ suggestion: "" }));
-vi.mock("~/nativeApi", () => ({
-  readNativeApi: () => ({
+vi.mock("~/nativeApi", () => {
+  const api = {
     server: {
       generateComposerPrediction: async () => ({
         suggestion: nativeApi.suggestion,
         outcome: "suggested",
       }),
     },
-  }),
-}));
+  };
+  // The transcript scroll hook reaches appSettings, which imports ensureNativeApi.
+  return { readNativeApi: () => api, ensureNativeApi: () => api };
+});
 
 const THREAD_ID = ThreadId.makeUnsafe("thread-accept");
 const TARGET: ComposerPredictionTarget = {

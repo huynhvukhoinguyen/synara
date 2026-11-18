@@ -481,18 +481,6 @@ export function isPinnedSubagentRunEntry(
   return liveEntryIds.has(entry.id) || (run.entryIds ?? []).some((id) => liveEntryIds.has(id));
 }
 
-/**
- * A chat with no Environment panel (Lattice's embedded Agent panel) has no
- * background-task list, so a task still running after its turn settled stays
- * at the end of the answer, with its Stop, until it ends and folds back.
- */
-export function isPinnedLiveBackgroundTaskEntry(
-  entry: WorkLogEntry,
-  pinLiveBackgroundTasks: boolean | undefined,
-): boolean {
-  return pinLiveBackgroundTasks === true && entry.backgroundTask?.status === "running";
-}
-
 const TURN_RESUMED_TASK_MESSAGES = {
   finished: "chat:turnResumedTaskFinished",
   failed: "chat:turnResumedTaskFailed",

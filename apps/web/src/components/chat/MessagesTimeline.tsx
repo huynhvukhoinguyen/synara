@@ -136,7 +136,6 @@ import {
   deriveMessagesTimelineRows,
   formatTurnHeaderLabel,
   findLastLiveWorkGroupId,
-  isPinnedLiveBackgroundTaskEntry,
   isPinnedSubagentRunEntry,
   MAX_VISIBLE_WORK_LOG_ENTRIES,
   planWorkEntryRenderChunks,
@@ -462,8 +461,6 @@ interface MessagesTimelineProps {
   activeTurnInProgress: boolean;
   /** Subagent rows with a child still at work, shown at the end of their answer. */
   liveSubagentRunEntryIds?: ReadonlySet<string>;
-  /** No Environment panel: running background tasks stay at the end of their answer. */
-  pinLiveBackgroundTasks?: boolean;
   /** User setting: false keeps every finished turn expanded instead of folding it. */
   collapseFinishedTurns?: boolean;
   activeTurnStartedAt: string | null;
@@ -612,7 +609,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   workingLabel: workingLabelProp,
   activeTurnInProgress,
   liveSubagentRunEntryIds: liveSubagentRunEntryIdsProp,
-  pinLiveBackgroundTasks,
   collapseFinishedTurns,
   activeTurnStartedAt,
   worktreeSetup: worktreeSetupProp,
@@ -1596,8 +1592,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           item.entry.synaraThreadCreation ||
           item.entry.computerSetupRequired ||
           item.entry.computerControlDenied ||
-          isPinnedSubagentRunEntry(item.entry, liveSubagentRunEntryIds) ||
-          isPinnedLiveBackgroundTaskEntry(item.entry, pinLiveBackgroundTasks)
+          isPinnedSubagentRunEntry(item.entry, liveSubagentRunEntryIds)
         ),
     );
     const hasCollapsedWork = Boolean(collapsedTurnItems && collapsedTurnItems.length > 0);
@@ -2517,11 +2512,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           // instead of burying it inside the closed "Worked for" disclosure.
           // Subagents still at work after the turn ended close the answer, right
           // before its actions and timestamp, until they settle into "Worked for".
-          // Running background tasks join them when the chat has no Environment panel.
           const pinnedSubagentEntries = (row.collapsedTurnItems ?? []).flatMap((item) =>
-            item.kind === "work" &&
-            (isPinnedSubagentRunEntry(item.entry, liveSubagentRunEntryIds) ||
-              isPinnedLiveBackgroundTaskEntry(item.entry, pinLiveBackgroundTasks))
+            item.kind === "work" && isPinnedSubagentRunEntry(item.entry, liveSubagentRunEntryIds)
               ? [item.entry]
               : [],
           );
@@ -2542,8 +2534,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 item.entry.synaraThreadCreation ||
                 item.entry.computerSetupRequired ||
                 item.entry.computerControlDenied ||
-                isPinnedSubagentRunEntry(item.entry, liveSubagentRunEntryIds) ||
-                isPinnedLiveBackgroundTaskEntry(item.entry, pinLiveBackgroundTasks)
+                isPinnedSubagentRunEntry(item.entry, liveSubagentRunEntryIds)
               ),
           );
           const hasCollapsedWork = Boolean(collapsedTurnItems?.length);

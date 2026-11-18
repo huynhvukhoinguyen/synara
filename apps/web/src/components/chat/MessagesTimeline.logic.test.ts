@@ -23,7 +23,6 @@ import {
   findLastLiveWorkGroupId,
   formatTurnHeaderLabel,
   formatTurnResumedBy,
-  isPinnedLiveBackgroundTaskEntry,
   isPinnedSubagentRunEntry,
   normalizeCompactToolLabel,
   summarizeTurnFailureReason,
@@ -944,34 +943,6 @@ describe("deriveMessagesTimelineRows", () => {
       isPinnedSubagentRunEntry(
         { id: "w", createdAt: "2026-01-01T00:00:00Z", label: "Read", tone: "tool" },
         new Set(["w"]),
-      ),
-    ).toBe(false);
-  });
-
-  it("pins running background tasks only in chats without an Environment panel", () => {
-    const entry = (status: "running" | "finished") => ({
-      id: `task-${status}`,
-      createdAt: "2026-01-01T00:00:00Z",
-      label: "Background task",
-      tone: "tool" as const,
-      backgroundTask: {
-        taskId: `task-${status}`,
-        taskType: "local_bash",
-        description: null,
-        command: "sleep 20",
-        status,
-        startedAt: "2026-01-01T00:00:00Z",
-        completedAt: status === "running" ? null : "2026-01-01T00:00:20Z",
-        exitCode: status === "running" ? null : 0,
-      },
-    });
-    expect(isPinnedLiveBackgroundTaskEntry(entry("running"), true)).toBe(true);
-    expect(isPinnedLiveBackgroundTaskEntry(entry("running"), false)).toBe(false);
-    expect(isPinnedLiveBackgroundTaskEntry(entry("finished"), true)).toBe(false);
-    expect(
-      isPinnedLiveBackgroundTaskEntry(
-        { id: "w", createdAt: "2026-01-01T00:00:00Z", label: "Read", tone: "tool" },
-        true,
       ),
     ).toBe(false);
   });

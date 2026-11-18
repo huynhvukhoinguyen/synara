@@ -58,7 +58,6 @@ interface ChatTranscriptPaneProps {
   activeTurnInProgress: boolean;
   /** Subagent rows with a child still at work, shown at the end of their answer. */
   liveSubagentRunEntryIds?: ReadonlySet<string>;
-  pinLiveBackgroundTasks?: boolean;
   /** What the transcript's subagent cards read from the chat (child threads, controls). */
   subagentRun?: Omit<SubagentRunContextValue, "visibility"> | null;
   /** The newest card with subagents at work; drives the floating "N running" chip. */
@@ -171,7 +170,6 @@ export function ChatTranscriptPane({
   activeTurnId,
   activeTurnInProgress,
   liveSubagentRunEntryIds,
-  pinLiveBackgroundTasks,
   subagentRun,
   runningSubagentRun,
   subagentThread,
@@ -427,7 +425,6 @@ export function ChatTranscriptPane({
               activeTurnId={activeTurnId ?? null}
               activeTurnInProgress={activeTurnInProgress}
               {...(liveSubagentRunEntryIds ? { liveSubagentRunEntryIds } : {})}
-              {...(pinLiveBackgroundTasks ? { pinLiveBackgroundTasks } : {})}
               collapseFinishedTurns={collapseFinishedTurns !== false}
               activeTurnStartedAt={activeTurnStartedAt}
               listRef={listRef}

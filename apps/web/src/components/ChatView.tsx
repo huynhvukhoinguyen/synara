@@ -7816,7 +7816,6 @@ export default function ChatView({
                     onResolveWorktreeSetup={onResolveWorktreeSetup}
                     activeTurnInProgress={activeTurnInProgress}
                     liveSubagentRunEntryIds={subagentCardScan.liveCardEntryIds}
-                    pinLiveBackgroundTasks={!environmentPanelReachable}
                     subagentRun={subagentRunContext}
                     // The composer's "N agents running" capsule already counts and
                     // scrolls to these agents; one indicator is enough.
