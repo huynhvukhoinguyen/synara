@@ -70,7 +70,7 @@ describe("Lattice project document tool", () => {
     expect(calls).toEqual([
       {
         workspaceRoot: "/workspace/project",
-        args: { path: "boards/research-plan.tldr", documentType: "board" },
+        args: { path: "boards/research-plan.excalidraw", documentType: "board" },
       },
       {
         workspaceRoot: "/workspace/project",
@@ -84,6 +84,21 @@ describe("Lattice project document tool", () => {
       destructiveHint: false,
       idempotentHint: false,
     });
+  });
+
+  it("creates a board named as a tldraw file in the board format", async () => {
+    const { calls, create } = await makeHarness();
+    const result = await Effect.runPromise(
+      create.handler({ path: "boards/old-plan.tldr", documentType: "board" }, context),
+    );
+
+    expect(result.isError).not.toBe(true);
+    expect(calls).toEqual([
+      {
+        workspaceRoot: "/workspace/project",
+        args: { path: "boards/old-plan.excalidraw", documentType: "board" },
+      },
+    ]);
   });
 
   it("rejects traversal, absolute paths, and mismatched native extensions", async () => {

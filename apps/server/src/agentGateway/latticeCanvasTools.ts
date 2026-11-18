@@ -18,8 +18,11 @@ const commonShapeProperties = {
   width: { type: "number", description: "Convenience alias for props.w." },
   height: { type: "number", description: "Convenience alias for props.h." },
   text: { type: "string", description: "Plain text for text, note, or geometric shapes." },
-  color: { type: "string", description: "A tldraw color such as black, blue, red, or green." },
-  fill: { type: "string", description: "A tldraw fill such as none, semi, solid, or pattern." },
+  color: {
+    type: "string",
+    description: "A color name such as black, blue, red, or green, or a hex color.",
+  },
+  fill: { type: "string", description: "A fill: none, semi, solid, or pattern." },
 } as const;
 
 const createShapesSchema = {
@@ -50,7 +53,7 @@ const createShapesSchema = {
           "highlight",
         ],
         description:
-          "The model-friendly shape type. Geometric aliases are converted to tldraw geo shapes.",
+          "The model-friendly shape type. Lattice boards are Excalidraw: geo, triangle, trapezoid, and hexagon become rectangles, oval an ellipse, and rhombus a diamond.",
       },
     },
     required: ["type"],
@@ -119,7 +122,7 @@ export const makeLatticeCanvasTools = (options: {
         name: "list_canvas_shapes",
         action: "list",
         description:
-          "List a page of shapes on the currently open Lattice tldraw page, including ids, positions, types, and properties. Use offset to continue when hasMore is true.",
+          "List a page of shapes on the currently open Lattice board, including ids, positions, types, and properties. Use offset to continue when hasMore is true.",
         inputSchema: {
           type: "object",
           properties: {
@@ -134,7 +137,7 @@ export const makeLatticeCanvasTools = (options: {
         name: "create_canvas_shapes",
         action: "create",
         description:
-          "Create up to 100 shapes on the currently open Lattice tldraw canvas. Supports geometric aliases, text, notes, arrows, lines, drawings, frames, and highlights. Returns the complete created shapes and their stable ids.",
+          "Create up to 100 shapes on the currently open Lattice board. Supports geometric aliases, text, notes, arrows, lines, drawings, frames, and highlights. Returns the complete created shapes and their stable ids.",
         inputSchema: {
           type: "object",
           properties: { shapes: createShapesSchema },
@@ -147,7 +150,7 @@ export const makeLatticeCanvasTools = (options: {
         name: "update_canvas_shapes",
         action: "update",
         description:
-          "Move, resize, restyle, relabel, lock, or otherwise update up to 100 existing shapes on the currently open Lattice tldraw canvas. Call list_canvas_shapes first to obtain ids.",
+          "Move, resize, restyle, relabel, lock, or otherwise update up to 100 existing shapes on the currently open Lattice board. Call list_canvas_shapes first to obtain ids.",
         inputSchema: {
           type: "object",
           properties: { shapes: updateShapesSchema },
