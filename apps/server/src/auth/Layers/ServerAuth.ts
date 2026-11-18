@@ -113,10 +113,17 @@ export const makeServerAuth = Effect.gen(function* () {
 
   const verifyToken = (token: string): Effect.Effect<AuthenticatedSession, AuthError> =>
     sessions.verify(token).pipe(
+      // Lattice hands the runtime a bare launch token, which the loopback check
+      // accepts directly; a signed-in probe that also offers it here is rejected
+      // as malformed and treats that as its normal answer. Logging that rejection
+      // (about twice a second) buried everything else in the sidecar log, so only
+      // other rejections, such as a bad signature, are logged.
       Effect.tapError((cause: SessionCredentialError) =>
-        Effect.logWarning("Rejected authenticated session credential.").pipe(
-          Effect.annotateLogs({ reason: cause.message }),
-        ),
+        cause.message === "Malformed session token."
+          ? Effect.void
+          : Effect.logWarning("Rejected authenticated session credential.").pipe(
+              Effect.annotateLogs({ reason: cause.message }),
+            ),
       ),
       Effect.map(toAuthenticatedSession),
       Effect.mapError(
