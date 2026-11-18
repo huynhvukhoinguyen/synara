@@ -11,11 +11,11 @@ import "../index.css";
 
 import type { EmbedModeConfig } from "../embedMode";
 
-const route = vi.hoisted(() => ({ navigate: vi.fn() }));
+const route = vi.hoisted(() => ({ navigate: vi.fn(), activeThreadId: null as ThreadId | null }));
 const embed = vi.hoisted(() => ({ config: null as EmbedModeConfig | null }));
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => route.navigate,
-  useParams: () => null,
+  useParams: () => route.activeThreadId,
 }));
 vi.mock("../hooks/useDiffRouteSearch", () => ({ useDiffRouteSearch: () => ({}) }));
 vi.mock("../appSettings", async (importOriginal) => ({
@@ -33,6 +33,8 @@ vi.mock("../embedMode", async (importOriginal) => ({
   readEmbedMode: () => embed.config,
 }));
 
+import { setPanelShownByHost } from "../hooks/usePanelThreadWarmth";
+import { SYNARA_PROJECT_AGENT_ACTIVITY } from "../notifications/latticeProjectActivity";
 import { TaskCompletionNotifications } from "../notifications/taskCompletion";
 import { useStore } from "../store";
 import { initialState } from "../storeState";
@@ -224,6 +226,8 @@ beforeEach(() => {
   toastIds = [];
   embed.config = null;
   route.navigate.mockReset();
+  route.activeThreadId = null;
+  setPanelShownByHost(false);
   useStore.setState(initialState);
   useTerminalStateStore.setState({ terminalStateByThreadId: {} });
   const realAdd = toastManager.add.bind(toastManager);
@@ -274,6 +278,82 @@ describe("thread notifications in a Lattice embed", () => {
       expect(addToast.mock.calls[0]![0].data).toMatchObject({ threadId: alphaThreadId });
     });
   }
+});
+
+describe("project agent activity in a Lattice embed", () => {
+  const lastActivity = () =>
+    postToHost.mock.calls
+      .map(([message]) => message as { type?: string })
+      .findLast((message) => message?.type === SYNARA_PROJECT_AGENT_ACTIVITY);
+
+  it("keeps reporting a turn off-route through approval and completion until it is read", async () => {
+    embed.config = embedFor("/work/alpha");
+    runAlphaTurn();
+    renderRuntime();
+    const snapshot = { version: 1, workspaceRoot: "/work/alpha" };
+    await expect.poll(lastActivity).toMatchObject({
+      ...snapshot,
+      running: true,
+      waiting: false,
+      completedUnread: false,
+    });
+
+    requestAlphaApproval();
+    await expect.poll(lastActivity).toMatchObject({
+      ...snapshot,
+      running: true,
+      waiting: true,
+      completedUnread: false,
+    });
+
+    completeAlphaTurn();
+    await expect.poll(lastActivity).toMatchObject({
+      ...snapshot,
+      running: false,
+      waiting: false,
+      completedUnread: true,
+    });
+
+    flushSync(() =>
+      useStore
+        .getState()
+        .markThreadVisited(alphaThreadId, new Date(Date.now() + 3_000).toISOString()),
+    );
+    await expect.poll(lastActivity).toMatchObject({
+      ...snapshot,
+      running: false,
+      waiting: false,
+      completedUnread: false,
+    });
+  });
+
+  it.each([
+    { host: "parked", shown: false, foreground: true, toasts: 1 },
+    { host: "in the background", shown: true, foreground: false, toasts: 1 },
+    { host: "in the foreground", shown: true, foreground: true, toasts: 0 },
+  ])(
+    "routes completions for the selected chat when the panel is $host",
+    async ({ shown, foreground, toasts }) => {
+      embed.config = embedFor("/work/alpha");
+      route.activeThreadId = alphaThreadId;
+      setPanelShownByHost(shown, foreground);
+      await deliver(scenarios[0]!);
+      await expect.poll(lastActivity).toMatchObject({ running: false, completedUnread: true });
+      await expect.poll(() => hostUpserts().length).toBe(toasts);
+    },
+  );
+
+  it("does not report an unrelated workspace's running or unread turn", async () => {
+    embed.config = embedFor("/work/beta");
+    await deliver(scenarios[0]!);
+    await expect.poll(lastActivity).toMatchObject({
+      version: 1,
+      workspaceRoot: "/work/beta",
+      running: false,
+      waiting: false,
+      completedUnread: false,
+    });
+  });
 });
 
 describe("snooze reminders in a Lattice embed", () => {

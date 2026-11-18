@@ -15,6 +15,7 @@ import { useDiffRouteSearch } from "../hooks/useDiffRouteSearch";
 import { selectSplitView, useSplitViewStore } from "../splitViewStore";
 import { selectRightDockState, useRightDockStore } from "../rightDockStore";
 import { useStore } from "../store";
+import { usePanelReadableByHost } from "../hooks/usePanelThreadWarmth";
 import {
   collectSnoozedThreadIds,
   createAllThreadsSelector,
@@ -40,6 +41,10 @@ import {
   shouldShowThreadNotificationToast,
 } from "./taskCompletion.logic";
 import { claimSnoozeReminder } from "./snoozeReminderReceipts";
+import {
+  summarizeLatticeProjectActivity,
+  SYNARA_PROJECT_AGENT_ACTIVITY,
+} from "./latticeProjectActivity";
 import { t } from "~/i18n";
 
 export type BrowserNotificationPermissionState =
@@ -190,12 +195,41 @@ export function TaskCompletionNotifications() {
     [embedMode, projects],
   );
   const terminalStateByThreadId = useTerminalStateStore((store) => store.terminalStateByThreadId);
-  const visibleThreadIds = resolveVisibleToastThreadIds({
-    activeThreadId,
-    splitView,
-    rightDockRendered: routeSearch.view !== "editor",
-    rightDockState,
-  });
+  const panelReadableByHost = usePanelReadableByHost();
+  const visibleThreadIds = useMemo(
+    () =>
+      embedMode && !panelReadableByHost
+        ? new Set<ThreadId>()
+        : resolveVisibleToastThreadIds({
+            activeThreadId,
+            splitView,
+            rightDockRendered: routeSearch.view !== "editor",
+            rightDockState,
+          }),
+    [activeThreadId, embedMode, panelReadableByHost, rightDockState, routeSearch.view, splitView],
+  );
+  const hostOrigin = embedMode?.hostOrigin;
+  const workspaceRoot = embedMode?.workspaceRoot;
+  const projectActivity =
+    threadsHydrated && notificationProjectIds && embedMode?.surface === "chrome"
+      ? summarizeLatticeProjectActivity(sidebarSummaries, notificationProjectIds)
+      : null;
+  const { running, waiting, completedUnread } = projectActivity ?? {};
+
+  useEffect(() => {
+    if (!hostOrigin || !workspaceRoot || running === undefined) return;
+    window.parent.postMessage(
+      {
+        type: SYNARA_PROJECT_AGENT_ACTIVITY,
+        version: 1,
+        workspaceRoot,
+        running,
+        waiting,
+        completedUnread,
+      },
+      hostOrigin,
+    );
+  }, [completedUnread, hostOrigin, running, waiting, workspaceRoot]);
   const previousThreadsRef = useRef<readonly Thread[]>([]);
   const previousTerminalStateRef = useRef(terminalStateByThreadId);
   // Lazy state init: evaluated once, keeping the impure Date.now() call out

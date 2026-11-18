@@ -96,6 +96,7 @@ import { cn, isMacNavigatorPlatform, newCommandId, newThreadId, randomUUID } fro
 import { readNativeApi } from "~/nativeApi";
 import {
   setPanelShownByHost,
+  usePanelReadableByHost,
   usePanelShownByHost,
   usePanelThreadWarmth,
 } from "~/hooks/usePanelThreadWarmth";
@@ -1504,8 +1505,11 @@ export default function ChatView({
   // Read on a visit or new completion, not when the user explicitly marks this chat unread.
   const autoReadThreadId = activeThread?.id;
   const activeTurnCompletedAt = activeLatestTurn?.completedAt;
+  const panelShownByHost = usePanelShownByHost();
+  const panelReadableByHost = usePanelReadableByHost();
+  const canReadInPanel = !isEmbed || panelReadableByHost;
   useEffect(() => {
-    if (!autoReadThreadId || isInactiveSplitPane) return;
+    if (!autoReadThreadId || isInactiveSplitPane || !canReadInPanel) return;
     if (!latestTurnSettled) return;
     if (!activeTurnCompletedAt) return;
     const turnCompletedAt = Date.parse(activeTurnCompletedAt);
@@ -1517,6 +1521,7 @@ export default function ChatView({
     markThreadVisited(autoReadThreadId);
   }, [
     autoReadThreadId,
+    canReadInPanel,
     activeTurnCompletedAt,
     isInactiveSplitPane,
     latestTurnSettled,
@@ -1528,7 +1533,8 @@ export default function ChatView({
   const activeSnoozedUntil = activeThread?.snoozedUntil;
   const activeSnoozeReminderAt = activeThread?.snoozeReminderAt;
   useEffect(() => {
-    if (!autoReadThreadId || isInactiveSplitPane || !activeSnoozeReminderAt) return;
+    if (!autoReadThreadId || isInactiveSplitPane || !canReadInPanel || !activeSnoozeReminderAt)
+      return;
     const returned = {
       snoozedUntil: activeSnoozedUntil,
       snoozeReminderAt: activeSnoozeReminderAt,
@@ -1538,6 +1544,7 @@ export default function ChatView({
       markThreadVisited(autoReadThreadId, activeSnoozeReminderAt);
   }, [
     autoReadThreadId,
+    canReadInPanel,
     isInactiveSplitPane,
     activeSnoozedUntil,
     activeSnoozeReminderAt,
@@ -2465,7 +2472,7 @@ export default function ChatView({
       // upstream quote surface no longer needs a remount side effect.
       readLatticeAgentPanelOpenedMessage(event, config);
       const panelVisible = readLatticeAgentPanelVisibilityMessage(event, config);
-      if (panelVisible !== null) setPanelShownByHost(panelVisible);
+      if (panelVisible !== null) setPanelShownByHost(panelVisible, event.data.foreground !== false);
     };
     postHostContextRequestToLattice(config);
     postPaperLibraryRequestToLattice(config);
@@ -4417,7 +4424,6 @@ export default function ChatView({
   const [dismissedClaudeNoticeKey, setDismissedClaudeNoticeKey] = useState<string | null>(null);
   // A CLI installed while the panel was away is found when the writer comes back to it:
   // the server re-adds the usual install folders to PATH before every probe.
-  const panelShownByHost = usePanelShownByHost();
   const panelWasShownRef = useRef(false);
   useEffect(() => {
     // Only on the panel being shown, not on every status change while it is.
