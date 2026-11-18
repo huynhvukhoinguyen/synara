@@ -6,6 +6,7 @@
 
 import { type MouseEvent, useContext } from "react";
 
+import { readEmbedMode } from "~/embedMode";
 import { describeLinkChip, openExternalLink } from "~/lib/linkChips";
 import {
   ChatLinkActionsContext,
@@ -40,10 +41,14 @@ export function InlineLinkChip({
   const onClick = (event: MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
+    const external = event.metaKey || event.ctrlKey;
+    if (readEmbedMode()?.browserPanel) {
+      openExternalLink(url, external ? "external" : undefined);
+      return;
+    }
     // A plain click on a pull request or issue follows the user's setting (in the app by
     // default); cmd/ctrl-click goes to GitHub.
-    const openGitHubItem =
-      event.metaKey || event.ctrlKey ? undefined : resolveGitHubItemClickOpener(url, linkActions);
+    const openGitHubItem = external ? undefined : resolveGitHubItemClickOpener(url, linkActions);
     if (openGitHubItem) {
       openGitHubItem(url);
       return;

@@ -192,10 +192,10 @@ export function describeLinkChip(url: string): LinkChipDescriptor {
 }
 
 /** Opens a URL in the user's external browser, falling back to a new tab. */
-export function openExternalLink(url: string): void {
+export function openExternalLink(url: string, destination?: "panel" | "external"): void {
   const href = normalizeComposerLinkUrl(url) ?? url;
   const embed = readEmbedMode();
-  if (embed && postExternalLinkToLattice(embed, href)) {
+  if (embed && postExternalLinkToLattice(embed, href, destination)) {
     return;
   }
   const api = readNativeApi();

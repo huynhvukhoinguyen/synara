@@ -1724,7 +1724,8 @@ const MARKDOWN_COMPONENTS: Components = {
                 onClick: (event: React.MouseEvent) => {
                   if (readEmbedMode()) {
                     event.preventDefault();
-                    openExternalLink(restoredHref);
+                    if (event.metaKey || event.ctrlKey) openExternalLink(restoredHref, "external");
+                    else openExternalLink(restoredHref);
                     return;
                   }
                   if (event.metaKey || event.ctrlKey) return;

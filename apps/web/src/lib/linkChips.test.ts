@@ -86,6 +86,7 @@ describe("openExternalLink", () => {
         locale: "en",
       },
       "https://example.com/paper",
+      undefined,
     );
     expect(windowOpen).not.toHaveBeenCalled();
   });
