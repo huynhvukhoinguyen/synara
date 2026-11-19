@@ -21,6 +21,7 @@ import { resolveProviderAttachmentPath } from "../../provider/providerAttachment
 import { ServerConfig } from "../../config.ts";
 import { appendFileAttachmentsPromptBlock } from "../../provider/attachmentProjection.ts";
 import {
+  ensureOpenCodeSdkLoaded,
   OpenCodeRuntime,
   OPENCODE_CLI_SPEC,
   type OpenCodeCompatibleCliSpec,
@@ -44,6 +45,7 @@ import {
   buildCommitMessagePrompt,
   buildComposerPredictionPrompt,
   buildDiffSummaryPrompt,
+  buildTextTaskPrompt,
   buildPrContentPrompt,
   buildThreadRecapPrompt,
   buildProjectDigestPrompt,
@@ -443,6 +445,7 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
       const runAgainstServer = (server: Pick<OpenCodeServerConnection, "url" | "serverPassword">) =>
         Effect.tryPromise({
           try: async (signal) => {
+            await ensureOpenCodeSdkLoaded();
             const client = openCodeRuntime.createOpenCodeSdkClient({
               baseUrl: server.url,
               directory: input.cwd,
@@ -846,6 +849,32 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
         });
       });
 
+    const generateTextTask: TextGenerationShape["generateTextTask"] = Effect.fn(
+      `${config.serviceName}.generateTextTask`,
+    )(function* (input) {
+      const modelSelection = resolveOpenCodeCompatibleModelSelection(config, input);
+      if (!modelSelection) {
+        return yield* new TextGenerationError({
+          operation: "generateTextTask",
+          detail: `Invalid ${config.displayName} model selection.`,
+        });
+      }
+
+      const { prompt, outputSchemaJson, rawTextFallback } = buildTextTaskPrompt({
+        prompt: input.prompt,
+      });
+      const generated = yield* runOpenCodeJson({
+        operation: "generateTextTask",
+        cwd: input.cwd,
+        prompt,
+        outputSchemaJson,
+        rawTextFallback,
+        modelSelection,
+        ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
+      });
+      return { text: generated.text.trim() };
+    });
+
     return {
       generateCommitMessage,
       generatePrContent,
@@ -857,6 +886,7 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
       generateProjectDigest,
       generateAutomationIntent,
       evaluateAutomationCompletion,
+      generateTextTask,
     } satisfies TextGenerationShape;
   });
 

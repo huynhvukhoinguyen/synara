@@ -290,6 +290,17 @@ export interface ProviderServiceShape {
   readonly hasLiveRuntimeTasks?: (input: { readonly threadId: ThreadId }) => Effect.Effect<boolean>;
 
   /**
+   * Record the thread an embedded panel is showing (null when it shows none).
+   * That thread's runtime is exempt from the idle stop until the report's lease
+   * lapses, so callers renew it while the thread stays on screen. Returns the
+   * thread the panel showed before, if it changed.
+   */
+  readonly setPanelVisibleThread?: (input: {
+    readonly panelId: string;
+    readonly threadId: ThreadId | null;
+  }) => Effect.Effect<{ readonly previousThreadId: ThreadId | null }>;
+
+  /**
    * The extra folders the thread's persisted runtime was launched with, or undefined
    * without a binding. Covers runtimes this process recovered or prewarmed itself.
    */
@@ -358,6 +369,16 @@ export interface ProviderServiceShape {
   readonly compactThread: (input: {
     readonly threadId: ThreadId;
   }) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Give a live session's native thread the chat's title, so the provider's own
+   * clients list it by that name. Only providers that can name a thread (Codex)
+   * do anything; without a live session nothing is sent. Reports whether it was.
+   */
+  readonly setThreadName: (input: {
+    readonly threadId: ThreadId;
+    readonly name: string;
+  }) => Effect.Effect<boolean, ProviderServiceError>;
 
   /**
    * Stop provider event producers, drain the lossless fan-out while subscribers

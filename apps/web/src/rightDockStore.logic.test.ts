@@ -9,6 +9,7 @@ import {
   movePaneInState,
   openPaneInState,
   resolveVisibleDockSidechatThreadIds,
+  restrictRightDockStateToKinds,
   sanitizeRightDockStateByThreadId,
   sanitizeRightDockThreadState,
   setDockOpenInState,
@@ -22,6 +23,44 @@ describe("isRightDockPaneKind", () => {
     expect(isRightDockPaneKind(undefined)).toBe(false);
     expect(isRightDockPaneKind(null)).toBe(false);
     expect(isRightDockPaneKind(42)).toBe(false);
+  });
+});
+
+describe("restrictRightDockStateToKinds", () => {
+  it("keeps only the embedded host's allowed device pane", () => {
+    const withFile = openPaneInState(createDefaultRightDockState(), {
+      paneId: "file-1",
+      kind: "file",
+      filePath: "src/page.tsx",
+    });
+    const withDevice = openPaneInState(withFile, { paneId: "device-1", kind: "device" });
+    const restricted = restrictRightDockStateToKinds(withDevice, new Set(["device"]));
+
+    expect(restricted.open).toBe(true);
+    expect(restricted.panes.map((pane) => pane.kind)).toEqual(["device"]);
+    expect(restricted.activePaneId).toBe("device-1");
+  });
+
+  it("closes the dock when every pane is forbidden", () => {
+    // An out-of-workspace file opened from an embedded chat persisted this state; presenting
+    // it open would show an empty dock whose only content is the simulator launcher.
+    const withFile = openPaneInState(createDefaultRightDockState(), {
+      paneId: "file-1",
+      kind: "file",
+      filePath: "/var/folders/x/T/tmp.abc/p-1.png",
+    });
+    const restricted = restrictRightDockStateToKinds(withFile, new Set(["device"]));
+
+    expect(restricted).toMatchObject({ open: false, panes: [], activePaneId: null });
+  });
+
+  it("closes an open dock that holds no pane at all", () => {
+    const restricted = restrictRightDockStateToKinds(
+      { ...createDefaultRightDockState(), open: true },
+      new Set(["device"]),
+    );
+
+    expect(restricted).toMatchObject({ open: false, panes: [], activePaneId: null });
   });
 });
 

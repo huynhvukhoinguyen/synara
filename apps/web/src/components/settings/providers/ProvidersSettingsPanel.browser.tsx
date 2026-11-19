@@ -1,6 +1,6 @@
 import "../../../index.css";
 
-import { type ServerProviderStatus } from "@synara/contracts";
+import { type ProviderKind, type ServerProviderStatus } from "@synara/contracts";
 import { PROVIDER_DESCRIPTORS } from "@synara/shared/providerMetadata";
 import { page } from "vitest/browser";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -12,7 +12,30 @@ const harness = vi.hoisted(() => ({
   reconciled: true,
   refresh: vi.fn(),
   invalidate: vi.fn(async () => {}),
+  // Agents the server settings switch off (the fork keeps no `disabledProviders` app setting).
+  disabled: [] as ProviderKind[],
+  disabledListeners: new Set<() => void>(),
+  writeDisabled: vi.fn(),
 }));
+
+vi.mock("~/lib/serverDisabledProviders", async () => {
+  const { useSyncExternalStore } = await import("react");
+  return {
+    useServerDisabledProviders: () =>
+      useSyncExternalStore(
+        (listener) => {
+          harness.disabledListeners.add(listener);
+          return () => harness.disabledListeners.delete(listener);
+        },
+        () => harness.disabled,
+      ),
+    writeServerDisabledProviders: async (_queryClient: unknown, list: readonly ProviderKind[]) => {
+      harness.writeDisabled([...list]);
+      harness.disabled = [...list];
+      for (const listener of harness.disabledListeners) listener();
+    },
+  };
+});
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const queryClient = { invalidateQueries: harness.invalidate };
@@ -42,7 +65,7 @@ import { ProvidersSettingsPanel } from "./ProvidersSettingsPanel";
 const defaults = AppSettingsSchema.makeUnsafe({});
 const props = {
   defaults,
-  settings: { ...defaults, disabledProviders: ["grok" as const] },
+  settings: defaults,
   updateSettings: vi.fn(),
   updateSettingsAndWait: vi.fn(async () => {}),
   active: true,
@@ -51,6 +74,8 @@ const props = {
 };
 
 beforeEach(() => {
+  harness.disabled = ["grok"];
+  harness.writeDisabled.mockReset();
   harness.reconciled = true;
   harness.refresh.mockReset();
   harness.statuses = PROVIDER_DESCRIPTORS.map(({ kind }) => ({
@@ -314,18 +339,12 @@ it("resets the whole agents list, including enablement, from one header action",
       codexBinaryPath: defaults.codexBinaryPath,
     }),
   );
-  expect(updateSettingsAndWait).toHaveBeenCalledWith({
-    disabledProviders: defaults.disabledProviders,
-  });
+  expect(harness.writeDisabled).toHaveBeenCalledWith([]);
 });
 
 it("allows recovering after every provider is disabled", async () => {
-  await render(
-    <ProvidersSettingsPanel
-      {...props}
-      settings={{ ...defaults, disabledProviders: [...defaults.providerOrder] }}
-    />,
-  );
+  harness.disabled = [...defaults.providerOrder];
+  await render(<ProvidersSettingsPanel {...props} />);
   expect(page.getByRole("button", { name: /^Reorder /u }).elements()).toHaveLength(0);
   expect(page.getByRole("switch", { name: /^Disable /u }).elements()).toHaveLength(0);
   await page.getByRole("button", { name: /Disabled providers/u }).click();
@@ -408,12 +427,12 @@ it("resets the agents list without touching accounts or the default account's si
 });
 
 it("offers no agents reset for account-only changes", async () => {
+  harness.disabled = [];
   await render(
     <ProvidersSettingsPanel
       {...props}
       settings={{
         ...props.settings,
-        disabledProviders: defaults.disabledProviders,
         codexHomePath: "~/.codex-personal",
         providerInstances: {
           codex_team: { driver: "codex", displayName: "Team", enabled: true, config: {} },

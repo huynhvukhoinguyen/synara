@@ -65,7 +65,7 @@ import {
   type GitHubInboxKindCounts,
   type GitHubInboxLabelOption,
 } from "./githubInbox.logic";
-import { useTranslation } from "~/i18n";
+import { t, useTranslation } from "~/i18n";
 
 const STATE_OPTIONS: ReadonlyArray<{
   value: GitHubInboxStateFilter;
@@ -170,10 +170,12 @@ function ActiveFilterChip({
   label,
   icon,
   onRemove,
+  locked = false,
 }: {
   label: string;
   icon?: ReactNode;
   onRemove: () => void;
+  locked?: boolean;
 }) {
   const { t } = useTranslation();
 
@@ -181,14 +183,16 @@ function ActiveFilterChip({
     <Badge variant="info" className="max-w-full min-w-0 rounded-full pr-0.5 pl-1.5 font-normal">
       {icon}
       <span className="min-w-0 truncate">{label}</span>
-      <button
-        type="button"
-        aria-label={t("git:removeFilter", { value0: label })}
-        className="flex size-4 shrink-0 items-center justify-center rounded-full hover:bg-info/16 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        onClick={onRemove}
-      >
-        <XIcon aria-hidden className="size-2.5" />
-      </button>
+      {!locked ? (
+        <button
+          type="button"
+          aria-label={t("git:removeFilter", { value0: label })}
+          className="flex size-4 shrink-0 items-center justify-center rounded-full hover:bg-info/16 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          onClick={onRemove}
+        >
+          <XIcon aria-hidden className="size-2.5" />
+        </button>
+      ) : null}
     </Badge>
   );
 }
@@ -200,6 +204,7 @@ export function GitHubInboxFilterBar({
   query,
   kindCounts,
   projectOptions,
+  projectLocked = false,
   labelOptions,
   refreshing,
   refreshBlockedReason,
@@ -219,6 +224,7 @@ export function GitHubInboxFilterBar({
   query: string;
   /** Rows each kind would show under the other filters; null while the list loads. */
   kindCounts: GitHubInboxKindCounts | null;
+  projectLocked?: boolean;
   projectOptions: ReadonlyArray<ProjectMenuPickerOption>;
   labelOptions: ReadonlyArray<GitHubInboxLabelOption>;
   refreshing: boolean;
@@ -242,6 +248,7 @@ export function GitHubInboxFilterBar({
     INVOLVEMENT_OPTIONS.find((option) => option.value === filters.involvement) ??
     INVOLVEMENT_OPTIONS[0]!;
   const toggleProject = (projectId: ProjectId) =>
+    !projectLocked &&
     onProjectIdsChange(
       filters.projectIds.includes(projectId)
         ? filters.projectIds.filter((id) => id !== projectId)
@@ -345,7 +352,7 @@ export function GitHubInboxFilterBar({
             </MenuGroup>
             <MenuSeparator />
             <MenuSub>
-              <MenuSubTrigger>
+              <MenuSubTrigger disabled={projectLocked}>
                 <FoldersIcon aria-hidden className={MENU_ICON_CLASS_NAME} />
                 {t("workspace:sections_projects")}
                 {filters.projectIds.length > 0 ? (
@@ -472,6 +479,7 @@ export function GitHubInboxFilterBar({
             {filters.projectIds.map((projectId) => (
               <ActiveFilterChip
                 key={projectId}
+                locked={projectLocked}
                 label={
                   projectOptions.find((option) => option.id === projectId)?.name ??
                   t("chat:detail_project")

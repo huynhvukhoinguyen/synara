@@ -7,6 +7,7 @@
 
 import type { AppSettings } from "~/appSettings";
 import { useTranslation } from "~/i18n";
+import { providerInstallFieldId } from "~/settingsNavigation";
 
 import { Switch } from "../../ui/switch";
 import { DebouncedSettingTextInput } from "../DebouncedSettingTextInput";
@@ -19,7 +20,7 @@ export function ProviderInstallFieldControl(props: {
 }) {
   const { t } = useTranslation();
 
-  const id = `provider-install-${props.field.settingsKey}`;
+  const id = providerInstallFieldId(props.field.settingsKey);
   if (props.field.kind === "boolean") {
     return (
       <label

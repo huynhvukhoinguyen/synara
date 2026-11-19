@@ -53,6 +53,10 @@ const NOT_SEARCHED_ROW_FILES: Readonly<Record<string, string>> = {
   "src/components/chat/group/GroupMemorySection.tsx": "a hub's settings, not Settings",
   "src/components/settings/AppSnapPermissionSection.tsx": "macOS-only; a page-level result",
   "src/components/settings/ComputerGettingStarted.tsx": "setup steps, not settings",
+  "src/components/settings/DefaultProviderSettingsRow.tsx":
+    "Lattice's copy of DefaultNewChatAccountRow under the same anchor",
+  "src/components/settings/providers/LatticeProvidersSettingsPanel.tsx":
+    "Lattice's Agent page: Synara's provider rows under the same anchors, plus hand-written entries",
 };
 
 function filesWithSettingAnchors(): string[] {

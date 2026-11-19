@@ -37,6 +37,8 @@ const CodexAccountConfigs = Schema.Array(CodexAccountConfig).pipe(
 );
 
 const ProviderSettingsBase = {
+  // Compatibility-only view field. The server normalizes persisted values to true
+  // and the patch contract deliberately has no corresponding mutation.
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: StringSetting.pipe(Schema.withDecodingDefault(() => "")),
   customModels: CustomModels,
@@ -63,11 +65,16 @@ export const ClaudeServerProviderSettings = Schema.Struct({
   // Claude Code keeps Artifact publishing (and `/design`, `/slides`) off for
   // Agent SDK sessions unless the host opts in.
   enableArtifacts: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
-  // On by default: resuming a large session after a long pause re-caches the
-  // whole history in one request, which can take several percent of a usage
-  // window. Synara asks the way Claude Code's interactive resume prompt does;
-  // embedded (SDK) Claude Code alone never asks.
+  // On by default, as upstream: resuming a large session after a long pause
+  // re-caches the whole history in one request, which can take several percent
+  // of a usage window. Synara asks the way Claude Code's interactive resume
+  // prompt does; embedded (SDK) Claude Code alone never asks.
   confirmColdCacheResume: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+  // Lattice profile only. Off by default: the embedded panel's Claude loads only
+  // Lattice's MCP server (strictMcpConfig), because Claude Code otherwise waits
+  // for every user-configured MCP server and claude.ai connector before its
+  // first request. On restores the user's own MCP servers at that startup cost.
+  loadUserMcpServers: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
 });
 export type ClaudeServerProviderSettings = typeof ClaudeServerProviderSettings.Type;
 
@@ -183,6 +190,17 @@ export const ServerSettings = Schema.Struct({
       model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
     })),
   ),
+  compileRepairModelSelection: ModelSelection.pipe(
+    Schema.withDecodingDefault(() => ({
+      provider: "codex" as const,
+      model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
+    })),
+  ),
+  // Lattice proofreading. Null inherits textGenerationModelSelection, so an
+  // install that never chose a proofreading model follows its Git writing model.
+  proofreadModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   providers: Schema.Struct({
     codex: CodexServerProviderSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     claudeAgent: ClaudeServerProviderSettings.pipe(Schema.withDecodingDefault(() => ({}))),
@@ -223,7 +241,6 @@ const ModelSelectionPatch = Schema.Struct({
 });
 
 const ProviderSettingsBasePatch = {
-  enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(StringSetting),
   customModels: Schema.optionalKey(CustomModels),
 };
@@ -241,6 +258,9 @@ export const ServerSettingsPatch = Schema.Struct({
   sourceControlWritingStyle: Schema.optionalKey(SourceControlWritingStyle),
   sourceControlCustomInstructions: Schema.optionalKey(SourceControlCustomInstructions),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
+  compileRepairModelSelection: Schema.optionalKey(ModelSelectionPatch),
+  // A whole selection replaces the override; null returns to inheriting.
+  proofreadModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   providers: Schema.optionalKey(
     Schema.Struct({
       codex: Schema.optionalKey(
@@ -258,6 +278,7 @@ export const ServerSettingsPatch = Schema.Struct({
           launchArgs: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(4096))),
           enableArtifacts: Schema.optionalKey(Schema.Boolean),
           confirmColdCacheResume: Schema.optionalKey(Schema.Boolean),
+          loadUserMcpServers: Schema.optionalKey(Schema.Boolean),
         }),
       ),
       cursor: Schema.optionalKey(

@@ -604,6 +604,98 @@ describe("orchestration projector", () => {
     expect(next.threads).toEqual([]);
   });
 
+  it("tracks latest turn id from session lifecycle events", async () => {
+    const createdAt = "2026-02-23T08:00:00.000Z";
+    const startedAt = "2026-02-23T08:00:05.000Z";
+    const model = createEmptyReadModel(createdAt);
+
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        model,
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: createdAt,
+          commandId: "cmd-create",
+          payload: {
+            threadId: "thread-1",
+            projectId: "project-1",
+            title: "demo",
+            modelSelection: {
+              provider: "codex",
+              model: "gpt-5.3-codex",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+
+    const afterUserMessage = await Effect.runPromise(
+      projectEvent(
+        afterCreate,
+        makeEvent({
+          sequence: 2,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: createdAt,
+          commandId: "cmd-user-message",
+          payload: {
+            threadId: "thread-1",
+            messageId: "message-1",
+            role: "user",
+            text: "Please do the work",
+            turnId: null,
+            streaming: false,
+            source: "native",
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+
+    const afterRunning = await Effect.runPromise(
+      projectEvent(
+        afterUserMessage,
+        makeEvent({
+          sequence: 3,
+          type: "thread.session-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: startedAt,
+          commandId: "cmd-running",
+          payload: {
+            threadId: "thread-1",
+            session: {
+              threadId: "thread-1",
+              status: "running",
+              providerName: "codex",
+              providerSessionId: "session-1",
+              providerThreadId: "provider-thread-1",
+              runtimeMode: "approval-required",
+              activeTurnId: "turn-1",
+              lastError: null,
+              updatedAt: startedAt,
+            },
+          },
+        }),
+      ),
+    );
+
+    const thread = afterRunning.threads[0];
+    expect(thread?.latestTurn?.turnId).toBe("turn-1");
+    expect(thread?.latestTurn?.pendingMessageId).toBe("message-1");
+    expect(thread?.session?.status).toBe("running");
+  });
+
   it("keeps latest turn running for checkpoint diff events", async () => {
     const createdAt = "2026-02-23T08:00:00.000Z";
     const startedAt = "2026-02-23T08:00:05.000Z";

@@ -1,5 +1,6 @@
 import {
   accountProfileSyncUnavailableReason,
+  composerPredictionsUnavailableInHost,
   remoteConnectionsUnavailableReason,
 } from "../../remoteFeaturePolicy";
 import { desktopFlavorFromBundleId } from "@synara/shared/betaFeatures";
@@ -9,6 +10,7 @@ import { Effect, FileSystem, Layer, Path, Random } from "effect";
 import packageJson from "../../../package.json" with { type: "json" };
 import { ServerConfig } from "../../config";
 import { createFileStringExclusively } from "../../atomicWrite";
+import { isDeviceControlEntitled } from "../../device/deviceEntitlement";
 import { ServerEnvironment, type ServerEnvironmentShape } from "../Services/ServerEnvironment";
 import { readMachineId } from "../machineId";
 import { resolveServerEnvironmentLabel } from "./ServerEnvironmentLabel";
@@ -100,11 +102,12 @@ export const makeServerEnvironment = Effect.fn(function* () {
     capabilities: {
       desktopUpdates: desktopUpdateBridgeAvailable(),
       repositoryIdentity: true,
+      deviceControl: process.platform === "darwin" && isDeviceControlEntitled(),
       accountProfileSync: accountProfileSyncUnavailableReason() === undefined,
       remoteConnections: remoteUnavailableReason === undefined,
       remoteResources: remoteUnavailableReason === undefined,
       ...(remoteUnavailableReason ? { remoteUnavailableReason } : {}),
-      composerPredictions: true,
+      composerPredictions: composerPredictionsUnavailableInHost() === undefined,
     },
     ...(machineId ? { machineId } : {}),
   };

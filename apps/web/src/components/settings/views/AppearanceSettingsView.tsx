@@ -584,7 +584,7 @@ export function AppearanceSettingsView(binding: AppSettingsBinding) {
                   showClear={settings.terminalFontFamily.length > 0}
                   spellCheck={false}
                   autoComplete="off"
-                  placeholder={t("settings:defaultJetBrainsMono")}
+                  placeholder={t("lattice:defaultMonospaceFont")}
                   className="w-full sm:w-56"
                   aria-label={t("settings:terminalFontFamily")}
                 />

@@ -45,6 +45,7 @@ import {
   type SynaraHarnessPolicyDeliveryState,
   takeSynaraHarnessPolicyTextPartForProviderSession,
 } from "../../agentGateway/harnessPolicy.ts";
+import { ACTIVE_AGENT_HOST_PROFILE } from "../../agentGateway/hostProfile.ts";
 import { AgentGatewayCredentials } from "../../agentGateway/Services/AgentGatewayCredentials.ts";
 import { PROVIDER_ADAPTER_RUNTIME_EVENT_BUFFER_CAPACITY } from "../Services/ProviderAdapter.ts";
 import {
@@ -114,6 +115,7 @@ import {
   applyDroidAcpInteractionMode,
   applyDroidAcpModelSelection,
   discoverDroidAcpModels,
+  isDroidUnknownSessionError,
   makeDroidAcpRuntime,
   type DroidAcpRuntimeSettings,
 } from "../acp/DroidAcpSupport.ts";
@@ -164,7 +166,7 @@ const DROID_DISCOVERY_CACHE_MAX_ENTRIES = 16;
 const DROID_RESOURCE_DISCIPLINE_PROMPT =
   "Keep CPU-intensive validation work serial: never overlap builds, typechecks, linters, tests, package audits, or package-manager commands, including across background agents. Wait for one CPU-intensive command to finish before starting the next. Read-only code inspection may still run in parallel.";
 const DROID_PLAN_MODE_PROMPT_PREFIX = [
-  "Synara Droid plan mode is active.",
+  `${ACTIVE_AGENT_HOST_PROFILE.displayName} Droid plan mode is active.`,
   "Do not implement or mutate files in this turn.",
   "Do not ask follow-up questions or wait for confirmation; if scope is ambiguous, choose a reasonable default and state the assumption in the plan.",
   "When ready, create the final implementation plan.",
@@ -230,6 +232,8 @@ interface DroidSessionContext {
   readonly threadId: ThreadId;
   readonly lifecycleGeneration?: string;
   session: ProviderSession;
+  /** Droid's id for this session, published as the resume cursor once resumable. */
+  readonly nativeSessionId: string;
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntimeShape;
   notificationFiber: Fiber.Fiber<void, never> | undefined;
@@ -375,6 +379,23 @@ function parseDroidResume(raw: unknown): { sessionId: string } | undefined {
   return { sessionId: raw.sessionId.trim() };
 }
 
+function droidResumeCursor(sessionId: string) {
+  return { schemaVersion: DROID_RESUME_VERSION, sessionId } as const;
+}
+
+// Droid deletes a session that never received a message when the session is
+// closed, and its ACP process closes every session when it exits. A freshly
+// created session therefore cannot be resumed until a prompt has reached it, so
+// its cursor stays `null` (no native continuation) until then. Returns whether
+// this call made the session resumable.
+function markDroidSessionResumable(ctx: DroidSessionContext): boolean {
+  if (ctx.session.resumeCursor !== null) {
+    return false;
+  }
+  ctx.session = { ...ctx.session, resumeCursor: droidResumeCursor(ctx.nativeSessionId) };
+  return true;
+}
+
 export function resolveDroidSessionCwd(
   inputCwd: string | undefined,
   serverConfig: ServerConfigShape,
@@ -484,6 +505,7 @@ export function makeDroidAdapter(
         childProcessSpawner,
         cwd: input.cwd,
         clientInfo: { name: input.clientName, version: "0.0.0" },
+        allowDevicePairing: false,
       });
 
     const logNative = (threadId: ThreadId, method: string, payload: unknown) =>
@@ -855,7 +877,7 @@ export function makeDroidAdapter(
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
             clientCapabilities: { elicitation: { form: {} } },
-            clientInfo: { name: "Synara", version: "0.0.0" },
+            clientInfo: { name: ACTIVE_AGENT_HOST_PROFILE.displayName, version: "0.0.0" },
             ...(agentGatewayCredentials
               ? {
                   buildMcpServers: (initializeResult: Acp.InitializeResponse) =>
@@ -1023,7 +1045,18 @@ export function makeDroidAdapter(
             Effect.mapError((error) =>
               error instanceof ProviderAdapterRequestError
                 ? error
-                : mapAcpToAdapterError(PROVIDER, input.threadId, "session/start", error),
+                : resumeSessionId !== undefined && isDroidUnknownSessionError(error)
+                  ? // Droid no longer has this session, so nothing can be resumed and no
+                    // prompt was sent. ProviderService starts a fresh session and carries
+                    // the conversation over with the prior-transcript bootstrap.
+                    new ProviderAdapterProcessError({
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      detail: `Droid no longer has session '${resumeSessionId}': ${error.message}`,
+                      reason: "resume-state-unavailable",
+                      cause: error,
+                    })
+                  : mapAcpToAdapterError(PROVIDER, input.threadId, "session/start", error),
             ),
           );
 
@@ -1047,10 +1080,10 @@ export function makeDroidAdapter(
             cwd,
             model: droidModelSelection?.model,
             threadId: input.threadId,
-            resumeCursor: {
-              schemaVersion: DROID_RESUME_VERSION,
-              sessionId: started.sessionId,
-            },
+            // A new session is an empty draft that Droid deletes on close; see
+            // markDroidSessionResumable. `null` also clears an older persisted cursor.
+            resumeCursor:
+              started.sessionSetupMethod === "new" ? null : droidResumeCursor(started.sessionId),
             createdAt: now,
             updatedAt: now,
           };
@@ -1063,6 +1096,7 @@ export function makeDroidAdapter(
               ? { lifecycleGeneration: input.lifecycleGeneration }
               : {}),
             session,
+            nativeSessionId: started.sessionId,
             scope: sessionScope,
             acp,
             notificationFiber: undefined,
@@ -1622,7 +1656,18 @@ export function makeDroidAdapter(
           // turn as cancelled rather than as a provider failure.
           ctx.pendingTurnInterrupted || ctx.stopped
             ? Effect.interrupt
-            : ctx.acp.prompt({ prompt: promptParts }),
+            : Effect.gen(function* () {
+                if (markDroidSessionResumable(ctx)) {
+                  yield* offerRuntimeEvent(ctx.lifecycleGeneration, {
+                    type: "thread.started",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    payload: { providerThreadId: ctx.nativeSessionId },
+                  });
+                }
+                return yield* ctx.acp.prompt({ prompt: promptParts });
+              }),
         ).pipe(
           Effect.mapError((error) =>
             mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
@@ -1778,7 +1823,9 @@ export function makeDroidAdapter(
         return {
           threadId: input.threadId,
           turnId,
-          ...(ctx.session.resumeCursor !== undefined
+          // The first prompt may not have been dispatched yet; its cursor reaches
+          // the binding with the thread.started published at dispatch.
+          ...(ctx.session.resumeCursor !== undefined && ctx.session.resumeCursor !== null
             ? { resumeCursor: ctx.session.resumeCursor }
             : {}),
         };
@@ -1973,7 +2020,10 @@ export function makeDroidAdapter(
                 childProcessSpawner,
                 cwd: sourceCwd,
                 resumeSessionId: sourceSessionId,
-                clientInfo: { name: "Synara Fork", version: "0.0.0" },
+                clientInfo: {
+                  name: `${ACTIVE_AGENT_HOST_PROFILE.displayName} Fork`,
+                  version: "0.0.0",
+                },
               });
               yield* runtime.start().pipe(
                 Effect.timeoutOption(DROID_ACP_REQUEST_TIMEOUT_MS),
@@ -1993,10 +2043,7 @@ export function makeDroidAdapter(
         // lifecycle generation, orphaning the fork's approval requests.
         return {
           threadId: input.threadId,
-          resumeCursor: {
-            schemaVersion: DROID_RESUME_VERSION,
-            sessionId: forked.sessionId,
-          },
+          resumeCursor: droidResumeCursor(forked.sessionId),
         };
       }).pipe(
         Effect.mapError((cause) =>
@@ -2076,7 +2123,7 @@ export function makeDroidAdapter(
             ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}),
             ...(input.environment ? { environment: input.environment } : {}),
             cwd,
-            clientName: "Synara Model Discovery",
+            clientName: `${ACTIVE_AGENT_HOST_PROFILE.displayName} Model Discovery`,
           });
           yield* runtime.start();
           const result = yield* discoverDroidAcpModels(runtime);
@@ -2203,7 +2250,7 @@ export function makeDroidAdapter(
             ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}),
             ...(input.environment ? { environment: input.environment } : {}),
             cwd,
-            clientName: "Synara Command Discovery",
+            clientName: `${ACTIVE_AGENT_HOST_PROFILE.displayName} Command Discovery`,
           });
           yield* runtime.start();
           let commands = yield* runtime.getAvailableCommands;
@@ -2270,6 +2317,7 @@ export function makeDroidAdapter(
       capabilities: {
         sessionModelSwitch: "restart-session",
         conversationRollback: "restart-session",
+        idleStopsCursorlessSessions: true,
       },
       startSession,
       sendTurn,

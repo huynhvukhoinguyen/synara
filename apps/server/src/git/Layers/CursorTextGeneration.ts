@@ -24,6 +24,7 @@ import {
   buildCommitMessagePrompt,
   buildComposerPredictionPrompt,
   buildDiffSummaryPrompt,
+  buildTextTaskPrompt,
   buildPrContentPrompt,
   buildThreadRecapPrompt,
   buildProjectDigestPrompt,
@@ -92,6 +93,8 @@ const makeCursorAcpConfig = (serverConfig: {
       childProcessSpawner,
       cwd,
       clientInfo: { name: "synara-git-text", version: "0.0.0" },
+      // Background text generation must never open Cursor's sign-in page.
+      allowInteractiveAuth: false,
     }),
   prepareRuntime: ({
     runtime,
@@ -431,6 +434,33 @@ const makeCursorTextGeneration = Effect.gen(function* () {
       });
     });
 
+  const generateTextTask: TextGenerationShape["generateTextTask"] = Effect.fn(
+    "CursorTextGeneration.generateTextTask",
+  )(function* (input) {
+    const modelSelection = resolveCursorModelSelection(input);
+    if (!modelSelection) {
+      return yield* new TextGenerationError({
+        operation: "generateTextTask",
+        detail: "Invalid Cursor model selection.",
+      });
+    }
+
+    const { prompt, outputSchemaJson, rawTextFallback } = buildTextTaskPrompt({
+      prompt: input.prompt,
+    });
+    const generated = yield* runAcpTextGeneration(cursorAcpConfig, {
+      childProcessSpawner,
+      operation: "generateTextTask",
+      cwd: input.cwd,
+      prompt,
+      outputSchemaJson,
+      rawTextFallback,
+      modelSelection,
+      providerOptions: input.providerOptions,
+    });
+    return { text: generated.text.trim() };
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
@@ -442,6 +472,7 @@ const makeCursorTextGeneration = Effect.gen(function* () {
     generateProjectDigest,
     generateAutomationIntent,
     evaluateAutomationCompletion,
+    generateTextTask,
   } satisfies TextGenerationShape;
 });
 

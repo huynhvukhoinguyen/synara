@@ -355,7 +355,7 @@ export function ComposerUsageLimitCard({
       : t("chat:usageLimit_cardResetsAt", { time: view.resetTime })
     : null;
   const body = armed
-    ? t("chat:usageLimit_cardArmed")
+    ? t("lattice:usageLimit_cardArmed")
     : recoverySetting.supported && recoverySetting.enabled
       ? t("chat:usageLimit_cardUnarmed")
       : t("chat:usageLimit_cardManual");

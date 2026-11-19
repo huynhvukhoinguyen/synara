@@ -176,6 +176,20 @@ describe("ComposerPredictionServiceLive", () => {
     );
   });
 
+  it("answers unavailable without reading the thread or generating under Lattice", async () => {
+    vi.stubEnv("AGENT_HOST_PROFILE", "lattice");
+    try {
+      const harness = makeHarness();
+      harness.state.missing = true;
+
+      await expect(harness.run(harness.generate)).resolves.toEqual(UNAVAILABLE);
+      expect(harness.generateComposerPrediction).not.toHaveBeenCalled();
+      expect(harness.logs).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("is unavailable without generating when the expected turn is no longer the latest", async () => {
     const harness = makeHarness();
     harness.state.thread = makeThread(CLAUDE_CHAT, TurnId.makeUnsafe("turn-3"));

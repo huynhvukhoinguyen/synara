@@ -32,6 +32,7 @@ import {
 } from "~/lib/providerSetupStatus";
 import { deriveProviderUsageDisplayRows } from "~/lib/providerUsageDisplay";
 import { rateLimitWindowDisplayLabel } from "~/lib/rateLimits";
+import { useServerDisabledProviders } from "~/lib/serverDisabledProviders";
 import { cn } from "~/lib/utils";
 import { ensureNativeApi } from "~/nativeApi";
 import { providerAccountAnchorId, providerAccountsSectionId } from "~/settingsNavigation";
@@ -83,9 +84,7 @@ function providerAccountIdentityFields(
         key: "configDir",
         label: t("settings:claudeConfigDirectory"),
         placeholder: "~/.claude-work",
-        description:
-          "Leave blank and Synara keeps this account's sign-in in its own folder. " +
-          "Set a directory to use a Claude config folder you already signed in to.",
+        description: t("lattice:leaveBlankAndSynaraKeepsThisAccount"),
       },
     ];
   }
@@ -119,6 +118,7 @@ export function ProviderAccountsList(props: {
   // Default first, then the provider's other accounts by name.
   const accounts = allAccounts.filter((account) => account.provider === provider);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const disabledProviders = useServerDisabledProviders();
   const { startSignIn, startingSignIn, signInDialog } = useProviderAccountSignIn(
     props.updateSettingsAndWait,
   );
@@ -185,7 +185,7 @@ export function ProviderAccountsList(props: {
       ...props.settings.providerInstances,
       [instanceId]: {
         driver: provider,
-        displayName: directoryName || `${providerLabel} imported`,
+        displayName: directoryName || t("lattice:imported", { provider: providerLabel }),
         enabled: true,
         config: {
           ...providerInstanceLaunchConfigFor(provider, props.settings),
@@ -322,7 +322,7 @@ export function ProviderAccountsList(props: {
         open={addDialogOpen}
         onOpenChange={setAddDialogOpen}
         providers={PROVIDER_VISIBILITY_OPTIONS.filter(
-          (option) => !props.settings.disabledProviders.includes(option.provider),
+          (option) => !disabledProviders.includes(option.provider),
         ).map((option) => ({
           provider: option.provider,
           label: option.title,

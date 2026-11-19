@@ -507,6 +507,15 @@ Create PR can include uncommitted changes and create a feature branch from the d
 When you supply a PR title, Synara also uses it as the commit message unless a separate commit
 message was supplied. Providing both the title and description skips text generation for this flow.
 
+Commit messages, PR text, Lattice proofreading and Lattice compile repair run on the model chosen in
+Settings → Models while its provider is enabled, installed and signed in. When it is not (Codex is
+the default, but you may have connected only Claude), the first ready provider runs the request on
+its default model instead, and Lattice proofreading reports that model as a fallback. With no ready
+provider the request fails with the providers you can connect in Settings → Providers.
+Right after launch, before the first provider check has finished, such a request waits up to 3
+seconds for it; if the check is still running then, a provider whose CLI (`codex`, `claude`) is not
+found counts as not ready, so a Claude-only setup proofreads on Claude rather than failing on Codex.
+
 Failed commit, push, and PR actions show the failed step and a copyable error until dismissed.
 Each action keeps its own error details when you switch workspaces and start another action.
 Codex text generation stops on a terminal `ERROR: ... 401 Unauthorized` diagnostic; transport
@@ -529,6 +538,17 @@ a private Git index, preserving Ignore whitespace without reading later checkout
 baseline, mismatched patch, compacted payload or older event without integrity metadata remains
 unavailable until a fresh complete update or final checkpoint. **All turns** still uses completed
 checkpoints; a live preview is not proof that a turn finished.
+
+File Undo and thread revert reverse only the thread's own changes. File Undo reverses one turn's
+diff (its turn-start snapshot to its turn-end snapshot); thread revert reverses each later turn's
+diff, newest first, rather than restoring the target snapshot. Both apply the reverse patch to the
+current text with a three-way fallback, so edits made since, by the user, another tool or a
+co-author, stay in place, including untracked files and files the thread never touched. Where such
+an edit changed the very lines being reversed, that file keeps the rest of the undo and marks just
+those spots with diff3 conflict markers; the timeline says which files need resolving. A turn whose
+diff swallowed an edit the host reported writing while the turn ran (Lattice sends
+`lattice:host-file-writes`) cannot tell that edit from the agent's, so Undo refuses to reverse that
+file rather than delete it.
 
 Turn and thread diffs, their changed-file lists and file Undo leave out history the task only moved
 onto: a merged, pulled, rebased or checked-out branch, or a reset to an existing commit. Synara
@@ -708,6 +728,12 @@ Use **Retry** on a failed image preview after the file becomes available or the
 host reconnects. Retrying renews an expired file grant when needed. Image previews
 do not poll in the background. A missing original cannot be recovered when no
 snapshot was retained; older replies may therefore still need the original file.
+
+When the agent reads an image or a tool returns one, such as a screenshot or a rendered figure, the tool row shows a thumbnail that opens the image full size.
+Synara keeps a private copy of each returned image in its data directory on the conversation's computer, so the row keeps showing the version the agent saw after the file changes.
+In the full-size viewer, the arrow keys step through the images tools returned in that conversation, in order, which lets you compare successive versions of a figure.
+An image file the agent writes with a file edit appears once that edit completes; an image a shell command writes appears only after the agent reads it.
+A finished turn shows its images under a collapsed **Worked for** header.
 
 ### Terminal panels
 

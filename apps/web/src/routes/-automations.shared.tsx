@@ -41,6 +41,7 @@ import { ProviderModelPicker } from "~/components/chat/ProviderModelPicker";
 import { Alert, AlertDescription, AlertTitle } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
 import { Dialog, DialogPopup, DialogTitle } from "~/components/ui/dialog";
+import { Input } from "~/components/ui/input";
 import {
   Menu,
   MenuGroup,
@@ -1329,12 +1330,14 @@ export function AutomationDialog({
                     <MenuGroup>
                       <MenuGroupLabel>{t("automation:schedule_runAt")}</MenuGroupLabel>
                       <div className="px-2 py-1">
-                        <input
+                        <Input
+                          nativeInput
+                          size="sm"
                           type="datetime-local"
                           step={1}
                           value={form.onceRunAt}
                           onChange={(event) => setField("onceRunAt", event.target.value)}
-                          className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-ui leading-snug outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          className="w-full text-ui-xs"
                         />
                       </div>
                     </MenuGroup>
@@ -1346,11 +1349,12 @@ export function AutomationDialog({
                     <MenuGroup>
                       <MenuGroupLabel>{t("automation:schedule_cron")}</MenuGroupLabel>
                       <div className="px-2 py-1">
-                        <input
+                        <Input
+                          size="sm"
                           value={form.cronExpression}
                           onChange={(event) => setField("cronExpression", event.target.value)}
                           placeholder="0 9 * * *"
-                          className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-ui leading-snug outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          className="w-full text-ui-xs"
                         />
                       </div>
                     </MenuGroup>
@@ -1407,11 +1411,12 @@ export function AutomationDialog({
                     <MenuGroup>
                       <MenuGroupLabel>{t("automation:schedule_timezone")}</MenuGroupLabel>
                       <div className="px-2 py-1">
-                        <input
+                        <Input
+                          size="sm"
                           value={form.timezone}
                           onChange={(event) => setField("timezone", event.target.value)}
-                          placeholder={t("automation:schedule_timezonePlaceholder")}
-                          className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-ui leading-snug outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          placeholder="Europe/Rome"
+                          className="w-full text-ui-xs"
                         />
                       </div>
                     </MenuGroup>
@@ -1482,11 +1487,12 @@ export function AutomationDialog({
                 <MenuGroup>
                   <MenuGroupLabel>{t("automation:detail_stopWhen")}</MenuGroupLabel>
                   <div className="px-2 py-1">
-                    <input
+                    <Input
+                      size="sm"
                       value={form.stopWhen}
                       onChange={(event) => setField("stopWhen", event.target.value)}
                       placeholder={t("automation:schedule_stopWhenPlaceholder")}
-                      className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-ui leading-snug outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="w-full text-ui-xs"
                     />
                   </div>
                 </MenuGroup>

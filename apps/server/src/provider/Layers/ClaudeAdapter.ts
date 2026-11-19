@@ -1,4 +1,5 @@
-import { providerProcessPriorityEnabled } from "../../providerProcessPriority";
+import { readClaudeLaunchSettings } from "../claudeLaunchSettings";
+import { prepareClaudeSkillsPlugin } from "../claudeSkillsPlugin.ts";
 import { claudeTurnResultUsage, type ClaudeResultUsageBaseline } from "../claudeResultUsage.ts";
 import {
   CLAUDE_EDGE_BLOCK_CONTINUATION_PROMPT,
@@ -30,6 +31,7 @@ import type {
   HookInput,
   HookJSONOutput,
   Options as ClaudeQueryOptions,
+  McpServerStatus,
   ModelInfo,
   PermissionMode,
   PermissionResult,
@@ -82,9 +84,12 @@ import {
   type ProviderListAgentsResult,
   type ProviderListModelsResult,
   getAgentMentionAliases,
+  MODEL_OPTIONS_BY_PROVIDER,
 } from "@synara/contracts";
 import {
   applyClaudePromptEffortPrefix,
+  CLAUDE_MODEL_MINIMUM_CLI_VERSIONS,
+  claudeCliVersionNeededForModel,
   getClaudeContextWindowSuffix,
   getDefaultEffort,
   getDefaultModel,
@@ -130,15 +135,26 @@ import {
   Stream,
 } from "effect";
 
-import { buildClaudeMcpServers, SYNARA_MCP_SERVER_NAME } from "../../agentGateway/mcpInjection.ts";
+import {
+  resolveClaudeMcpLaunchOptions,
+  SYNARA_MCP_SERVER_NAME,
+} from "../../agentGateway/mcpInjection.ts";
 import { SYNARA_UPDATE_PLAN_TOOL_NAME } from "../../agentGateway/turnPlanTools.ts";
-import { renderSynaraHarnessPolicy } from "../../agentGateway/harnessPolicy.ts";
+import { mapClaudeMcpServerStatuses } from "../mcpServerStatus.ts";
+import {
+  INLINE_VISUALS_ENABLED,
+  renderSynaraHarnessPolicy,
+} from "../../agentGateway/harnessPolicy.ts";
 import {
   isSynaraGatewayToolName,
   shouldAllowSynaraComputerProviderTool,
 } from "../../agentGateway/computerToolPermission.ts";
+import { ACTIVE_AGENT_HOST_PROFILE } from "../../agentGateway/hostProfile.ts";
 import { AgentGatewayCredentials } from "../../agentGateway/Services/AgentGatewayCredentials.ts";
-import { PROVIDER_ADAPTER_RUNTIME_EVENT_BUFFER_CAPACITY } from "../Services/ProviderAdapter.ts";
+import {
+  PROVIDER_ADAPTER_RUNTIME_EVENT_BUFFER_CAPACITY,
+  type ProviderMcpAdapterInput,
+} from "../Services/ProviderAdapter.ts";
 import {
   acquireAgentGatewaySessionLease,
   cancelAgentGatewayTurn,
@@ -148,6 +164,11 @@ import {
 import { resolveProviderAttachmentPath } from "../providerAttachmentPaths.ts";
 import { settleConcurrentTeardowns } from "../settleConcurrentTeardowns.ts";
 import { stripDiagnosticImages } from "../stripDiagnosticImages.ts";
+import {
+  mayCarryToolResultImages,
+  snapshotToolResultImages,
+  toolResultImagesRoot,
+} from "../toolResultImages.ts";
 import { ServerConfig } from "../../config.ts";
 import { buildFileAttachmentsPromptBlock } from "../attachmentProjection.ts";
 import { loadClaudeAgentSdk } from "../claudeAgentSdk.ts";
@@ -196,6 +217,17 @@ import {
   type ClaudeMonitorEventCursor,
 } from "../claudeMonitorEvents.ts";
 import { buildClaudeInstanceProcessEnv } from "../claudeEnvironment.ts";
+import {
+  CLAUDE_ACCESS_FORBIDDEN_MESSAGE,
+  CLAUDE_FAILURE_ERROR_CODES,
+  captureClaudeStderr,
+  describeClaudeModelRefusalOnOutdatedCli,
+  describeClaudeProcessExit,
+  isClaudeAccessForbidden,
+  type ClaudeStderrCapture,
+  type ClaudeStderrStream,
+} from "../claudeProcessExit.ts";
+import { clearUnavailableModel, recordUnavailableModel } from "../providerModelAvailability.ts";
 import { positiveFiniteNumber } from "../tokenUsage.ts";
 import {
   isClaudeAutoModeCliVersionSupported,
@@ -311,6 +343,9 @@ interface ClaudeTurnState {
   readonly assistantError?: {
     readonly code: ClaudeTurnErrorCode;
     readonly message: string;
+    // A finer code for the card when the SDK's is misleading (a 403 refusal
+    // arrives as authentication_failed); falls back to `code`.
+    readonly errorCode?: string;
     readonly httpStatus?: number;
   };
   // Result legs this turn already retried after an edge block. Their result
@@ -322,6 +357,9 @@ interface ClaudeTurnState {
     // The latest blocked result; a Stop during the wait settles cost and model usage with it.
     readonly lastResult: SDKResultMessage;
   };
+  // The picker model this turn was sent with, and the API id it resolved to, so
+  // the result can mark that model unavailable to the account (or clear it).
+  readonly requestedModel?: { readonly slug: string; readonly apiModelId: string | undefined };
   nextSyntheticAssistantBlockIndex: number;
   // Offset into assistantTextBlockOrder where the current assistant API
   // message's blocks begin. A turn spans many API messages (tool-use round
@@ -458,6 +496,8 @@ interface ClaudeSessionContext {
   readonly accountDiscoveryKey: string;
   readonly messageStream?: AsyncIterable<SDKMessage>;
   readonly processOwner: ClaudeProcessOwner;
+  // This session's `claude --version`, read once and only when a turn's model is refused.
+  readonly readInstalledCliVersion: () => Promise<string | null>;
   readonly stoppedSignal: Deferred.Deferred<void>;
   readonly pendingCompactionPreparations: Set<Deferred.Deferred<void>>;
   stopDeferred?: Deferred.Deferred<void, ProviderAdapterProcessError>;
@@ -482,6 +522,9 @@ interface ClaudeSessionContext {
   firstTurnSpawnModeAuthoritative: boolean;
   lastInteractionMode: ProviderInteractionMode | undefined;
   currentApiModelId: string | undefined;
+  // The picker slug behind currentApiModelId (the API id can carry a suffix such
+  // as "[1m]"); unset until a model is explicitly selected.
+  currentModelSlug?: string;
   resumeSessionId: string | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   // Supervised-mode "Always allow this session": later canUseTool prompts
@@ -659,7 +702,27 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly supportedCommands: () => Promise<SlashCommand[]>;
   readonly supportedModels: () => Promise<ModelInfo[]>;
   readonly supportedAgents: () => Promise<AgentInfo[]>;
+  // Optional so runtimes and test doubles without MCP control keep working;
+  // `/mcp` reports such a runtime as unable to answer.
+  readonly mcpServerStatus?: () => Promise<McpServerStatus[]>;
+  readonly reconnectMcpServer?: (serverName: string) => Promise<void>;
+  readonly toggleMcpServer?: (serverName: string, enabled: boolean) => Promise<void>;
+  // Present on the SDK's Query but left out of its published types: Claude Code
+  // starts the server's OAuth flow without opening a browser and answers with
+  // the authorization URL, then receives the redirect on its own localhost
+  // listener and reconnects the server.
+  readonly mcpAuthenticate?: (serverName: string) => Promise<ClaudeMcpAuthenticateResponse>;
+  // Also unpublished: `/mcp` > Clear authentication. Claude Code revokes and
+  // deletes only this server's OAuth entry (tokens and client registration) in
+  // its keychain credentials, keeps the server's config, and reports the server
+  // as needing sign-in again.
+  readonly mcpClearAuth?: (serverName: string) => Promise<unknown>;
   readonly close: () => void;
+}
+
+interface ClaudeMcpAuthenticateResponse {
+  readonly authUrl?: string;
+  readonly requiresUserAction?: boolean;
 }
 
 function cancellableClaudeMessageStream(
@@ -720,6 +783,9 @@ export type ClaudeOwnedProcess = ClaudeSpawnedProcess & ProcessExitHandle;
 
 interface ClaudeProcessOwner {
   process?: ClaudeOwnedProcess;
+  // Claude Code's stderr tail for the current process. A CLI that dies at
+  // startup explains itself only there; the SDK never sees our spawn's stderr.
+  stderr?: ClaudeStderrCapture;
 }
 
 function spawnOwnedClaudeCodeProcess(
@@ -732,7 +798,9 @@ function spawnOwnedClaudeCodeProcess(
     ...(options.cwd ? { cwd: options.cwd } : {}),
     env: options.env,
     signal: options.signal,
-    stdio: ["pipe", "pipe", "inherit"],
+    // Piped, not inherited: bindClaudeProcessOwner forwards it to our stderr
+    // (the host's sidecar log) and keeps the tail for the failure card.
+    stdio: ["pipe", "pipe", "pipe"],
   }) as unknown as ClaudeOwnedProcess;
 }
 
@@ -762,6 +830,21 @@ async function readInstalledClaudeCliVersion(input: {
       },
     );
   });
+}
+
+/** The catalog's display name for a Claude model ("Claude Fable 5.2"), else the slug. */
+function claudeCatalogModelName(slug: string): string {
+  const base = stripClaudeContextWindowSuffix(slug);
+  return MODEL_OPTIONS_BY_PROVIDER.claudeAgent.find((option) => option.slug === base)?.name ?? base;
+}
+
+// One read per session; a failed read is not retried and counts as unknown.
+function memoizeCliVersionRead(read: () => Promise<string | null>): () => Promise<string | null> {
+  let pending: Promise<string | null> | undefined;
+  return () => {
+    pending ??= read().catch(() => null);
+    return pending;
+  };
 }
 
 export interface ClaudeAdapterLiveOptions {
@@ -1678,9 +1761,12 @@ const CLAUDE_INTERRUPT_TIMEOUT = Duration.seconds(10);
 export const buildEmbeddedClaudeSystemPromptAppend = (
   gatewayControlAvailable: boolean,
   enableComputerControl = false,
+  // The gateway offers show_visual under this same gate, so Claude is told
+  // about it exactly when Codex's copy of the policy tells Codex.
+  inlineVisuals = INLINE_VISUALS_ENABLED,
 ) =>
   [
-    "You are running inside Synara, a coding app that embeds the Claude Agent SDK.",
+    `You are running inside ${ACTIVE_AGENT_HOST_PROFILE.displayName}, an app that embeds the Claude Agent SDK.`,
     "Do not present the host app as Claude Code unless the user is explicitly asking about Claude Code.",
     "Treat the current working directory as the active workspace for the task.",
     "When the user asks about the current project, codebase, or repository, proactively inspect files in the current working directory before asking the user where to look.",
@@ -1691,6 +1777,7 @@ export const buildEmbeddedClaudeSystemPromptAppend = (
       gatewayControlAvailable,
       enableComputerControl,
       automationAuthoring: "tool-descriptions",
+      inlineVisuals,
     }),
   ].join("\n");
 
@@ -2546,6 +2633,22 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const adapterScope = yield* Effect.scope;
     const fileSystem = yield* FileSystem.FileSystem;
     const serverConfig = yield* ServerConfig;
+    // The bundled and `~/.synara/skills` skills, served to Claude Code as a
+    // local plugin so it lists them and can pick one itself. Built from the
+    // launch-time disabled set, so a Settings toggle reaches the next session
+    // rather than a running one. A failure only costs Claude those skills: the
+    // explicit-mention path still inlines them.
+    const resolveClaudeSkillsPluginOptions = (disabledSkillNames: ReadonlyArray<string>) =>
+      Effect.tryPromise(() =>
+        prepareClaudeSkillsPlugin({ synaraBaseDir: serverConfig.baseDir, disabledSkillNames }),
+      ).pipe(
+        Effect.map((prepared) => (prepared ? { plugins: [prepared.plugin] } : {})),
+        Effect.catch((cause) =>
+          Effect.logWarning("Failed to prepare the Claude skills plugin", cause).pipe(
+            Effect.as({}),
+          ),
+        ),
+      );
     // Optional so adapter tests can run without the gateway layer; when
     // present, every session gets the synara_* MCP tools.
     const agentGatewayCredentials = Option.getOrUndefined(
@@ -2686,6 +2789,12 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ? options.spawnClaudeCodeProcess(spawnOptions)
           : spawnOwnedClaudeCodeProcess(spawnOptions, lowerPriority);
         owner.process = process;
+        const stderr = captureClaudeStderr(
+          (process as { readonly stderr?: ClaudeStderrStream | null }).stderr,
+          (chunk) => globalThis.process.stderr.write(chunk),
+        );
+        if (stderr) owner.stderr = stderr;
+        else delete owner.stderr;
         return process;
       };
 
@@ -2756,19 +2865,31 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         ),
       );
 
+    // Tool results that returned images (Read of a PNG, an MCP screenshot) keep a
+    // thread-scoped copy so the transcript can show what the agent saw; the
+    // bytes themselves are still stripped from the event below.
+    const toolImagesRoot = toolResultImagesRoot(serverConfig.stateDir);
     const offerRuntimeEvent = (
       context: ClaudeSessionContext,
       event: ProviderRuntimeEvent,
     ): Effect.Effect<void> =>
-      Queue.offer(runtimeEventQueue, {
-        ...(stripDiagnosticImages(event) as ProviderRuntimeEvent),
-        ...(event.providerInstanceId === undefined && context.session.providerInstanceId
-          ? { providerInstanceId: context.session.providerInstanceId }
-          : {}),
-        ...(context.lifecycleGeneration !== undefined
-          ? { lifecycleGeneration: context.lifecycleGeneration }
-          : {}),
-      }).pipe(Effect.asVoid);
+      (mayCarryToolResultImages(event)
+        ? Effect.promise(() => snapshotToolResultImages(event, toolImagesRoot))
+        : Effect.succeed(event)
+      ).pipe(
+        Effect.flatMap((snapshotted) =>
+          Queue.offer(runtimeEventQueue, {
+            ...(stripDiagnosticImages(snapshotted) as ProviderRuntimeEvent),
+            ...(event.providerInstanceId === undefined && context.session.providerInstanceId
+              ? { providerInstanceId: context.session.providerInstanceId }
+              : {}),
+            ...(context.lifecycleGeneration !== undefined
+              ? { lifecycleGeneration: context.lifecycleGeneration }
+              : {}),
+          }),
+        ),
+        Effect.asVoid,
+      );
 
     const logNativeSdkMessage = (
       context: ClaudeSessionContext,
@@ -4101,7 +4222,9 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ...(result?.usage ? { usage: result.usage } : {}),
             ...(turnResultUsage ? { modelUsage: turnResultUsage.modelUsage } : {}),
             claudeResultObserved: result !== undefined,
-            ...(turnState.assistantError ? { errorCode: turnState.assistantError.code } : {}),
+            ...(turnState.assistantError
+              ? { errorCode: turnState.assistantError.errorCode ?? turnState.assistantError.code }
+              : {}),
             ...(turnState.assistantError?.httpStatus !== undefined
               ? { httpStatus: turnState.assistantError.httpStatus }
               : {}),
@@ -4180,6 +4303,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             : { lifecycleGeneration: context.lifecycleGeneration }),
           promptQueue: context.promptQueue,
           query: context.query,
+          readInstalledCliVersion: context.readInstalledCliVersion,
           artifactsEnabled: context.artifactsEnabled,
           processOwner: context.processOwner,
           cacheProcessId: context.cacheProcessId,
@@ -5186,6 +5310,15 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const edgeBlocked =
           message.error !== undefined && isClaudeEdgeBlockedError(message.error, errorText);
         if (message.error && context.turnState) {
+          // Anthropic refusing the account or network (403) is not a sign-in problem,
+          // though the SDK tags it authentication_failed. A Cloudflare edge block is
+          // also a 403 tagged that way, but transient, so it keeps its retry.
+          const forbidden =
+            !edgeBlocked &&
+            message.error === "authentication_failed" &&
+            isClaudeAccessForbidden(
+              (message.message?.content ?? []).map(extractContentBlockText).join("\n"),
+            );
           const httpStatus = edgeBlocked ? 403 : claudeApiErrorStatus(errorText);
           context.turnState = {
             ...context.turnState,
@@ -5197,7 +5330,13 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                       context.turnState.edgeBlockRetry?.attempts ?? 0,
                     ),
                   }
-                : { code: message.error, message: claudeAssistantErrorMessage(message.error) }),
+                : forbidden
+                  ? {
+                      code: message.error,
+                      message: CLAUDE_ACCESS_FORBIDDEN_MESSAGE,
+                      errorCode: CLAUDE_FAILURE_ERROR_CODES.accessForbidden,
+                    }
+                  : { code: message.error, message: claudeAssistantErrorMessage(message.error) }),
               ...(httpStatus !== undefined ? { httpStatus } : {}),
             },
           };
@@ -5413,6 +5552,69 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         yield* updateResumeCursor(context);
       });
 
+    // A refused model that names a minimum Claude Code (Fable 5.2, Sonnet 5.5, Haiku
+    // 5.5) on a Claude Code known to be older is the CLI's age, not the account: say
+    // which release the model needs, and let noteRequestedModelAvailability skip the
+    // account record that would grey the row and switch the chat to another model.
+    // `claude --version` runs only on such a refusal, once per session.
+    const describeRefusalOnOutdatedCli = (
+      context: ClaudeSessionContext,
+      errorCode: string | undefined,
+    ): Effect.Effect<ReturnType<typeof describeClaudeModelRefusalOnOutdatedCli>> => {
+      const requested = context.turnState?.requestedModel;
+      const refused =
+        errorCode === "model_not_found" ||
+        errorCode === CLAUDE_FAILURE_ERROR_CODES.modelUnavailable;
+      if (
+        !requested ||
+        !refused ||
+        context.currentApiModelId !== requested.apiModelId ||
+        CLAUDE_MODEL_MINIMUM_CLI_VERSIONS[stripClaudeContextWindowSuffix(requested.slug)] ===
+          undefined
+      ) {
+        return Effect.succeed(null);
+      }
+      return Effect.promise(() => context.readInstalledCliVersion()).pipe(
+        Effect.map((installedVersion) =>
+          describeClaudeModelRefusalOnOutdatedCli({
+            errorCode,
+            modelName: claudeCatalogModelName(requested.slug),
+            neededVersion: claudeCliVersionNeededForModel(requested.slug, installedVersion),
+            installedVersion,
+          }),
+        ),
+      );
+    };
+
+    // A refused model is the only signal that the account cannot use a listed
+    // model: the SDK's model_not_found result, or Claude Code exiting with "There's
+    // an issue with the selected model" on stderr (claude_model_unavailable). Record
+    // it so the picker stops offering that model; a success with the model clears it.
+    // A rerouted turn (refusal fallback) was served by another model, so it proves
+    // nothing about the requested one either way.
+    const noteRequestedModelAvailability = (
+      context: ClaudeSessionContext,
+      status: ProviderRuntimeTurnStatus,
+      errorCode: string | undefined,
+      errorMessage: string | undefined,
+    ) => {
+      const requested = context.turnState?.requestedModel;
+      if (!requested || context.currentApiModelId !== requested.apiModelId) return;
+      const instanceId = context.session.providerInstanceId ?? PROVIDER;
+      const refused =
+        errorCode === "model_not_found" ||
+        errorCode === CLAUDE_FAILURE_ERROR_CODES.modelUnavailable;
+      if (status === "failed" && refused) {
+        recordUnavailableModel({
+          instanceId,
+          model: requested.slug,
+          reason: errorMessage ?? claudeAssistantErrorMessage("model_not_found"),
+        });
+      } else if (status === "completed") {
+        clearUnavailableModel({ instanceId, model: requested.slug });
+      }
+    };
+
     // An edge block leaves the CLI idle with a healthy login. Keep the turn open
     // and re-prompt the CLI after a backoff; false once the retry budget is spent.
     const edgeBlockRetryDelaysMs =
@@ -5539,6 +5741,27 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         } else if (message.subtype !== "success") {
           errorMessage = normalizeClaudeUserVisibleErrorMessage(message.errors[0], status);
         }
+        let failureCode = assistantError?.errorCode ?? assistantError?.code;
+        let availabilityCode: string | undefined = assistantError?.code;
+        if (status === "failed") {
+          const outdatedCli = yield* describeRefusalOnOutdatedCli(context, availabilityCode);
+          if (outdatedCli) {
+            errorMessage = outdatedCli.message;
+            failureCode = outdatedCli.errorCode;
+            availabilityCode = outdatedCli.errorCode;
+            // turn.completed reads its code from the turn's assistant error.
+            if (context.turnState?.assistantError) {
+              context.turnState = {
+                ...context.turnState,
+                assistantError: {
+                  ...context.turnState.assistantError,
+                  message: outdatedCli.message,
+                  errorCode: outdatedCli.errorCode,
+                },
+              };
+            }
+          }
+        }
 
         if (status === "failed") {
           // The terminal failure carries quota evidence atomically with recovery admission.
@@ -5552,7 +5775,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               context,
               errorMessage ?? "Claude turn failed.",
               undefined,
-              assistantError?.code,
+              failureCode,
             );
           }
         }
@@ -5562,6 +5785,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           yield* emitMonitorEvents(context);
         }
 
+        noteRequestedModelAvailability(context, status, availabilityCode, errorMessage);
         yield* completeTurn(context, status, errorMessage, message);
 
         // Results carry the fast-mode state that actually served the turn. Publish
@@ -6780,6 +7004,20 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         Stream.runForEach((message) => handleSdkMessage(context, message)),
       );
 
+    // "Claude Code process exited with code 1" says nothing a writer can act on.
+    // Give it the process's own stderr reason and a next-step code; the generic
+    // message stays when Claude Code wrote nothing.
+    const describeClaudeStreamFailure = (context: ClaudeSessionContext, message: string) =>
+      Effect.promise(async () => {
+        const stderr = context.processOwner.stderr;
+        if (stderr) await stderr.settled();
+        return describeClaudeProcessExit({
+          message,
+          stderr: stderr?.text(),
+          homeDir: serverConfig.homeDir,
+        });
+      });
+
     const handleStreamExit = (
       context: ClaudeSessionContext,
       exit: Exit.Exit<void, Error>,
@@ -6812,10 +7050,13 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               yield* completeTurn(context, "interrupted", CLAUDE_BENIGN_TERMINATION_MESSAGE);
             }
           } else {
-            const message = messageFromClaudeStreamCause(
-              exit.cause,
-              "Claude runtime stream failed.",
+            const streamFailure = yield* describeClaudeStreamFailure(
+              context,
+              messageFromClaudeStreamCause(exit.cause, "Claude runtime stream failed."),
             );
+            const { message, errorCode } =
+              (yield* describeRefusalOnOutdatedCli(context, streamFailure.errorCode)) ??
+              streamFailure;
             if (isClaudeMissingResumeConversationCause(exit.cause)) {
               // The SDK can accept a resumed query and report the missing
               // native conversation only after the prompt is queued. Drop the
@@ -6843,7 +7084,9 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 detail: message,
               });
             }
-            yield* emitRuntimeError(context, message, Cause.pretty(exit.cause));
+            yield* emitRuntimeError(context, message, Cause.pretty(exit.cause), errorCode);
+            // A refused model can surface only on stderr when Claude Code exits first.
+            noteRequestedModelAvailability(context, "failed", errorCode, message);
             yield* completeTurn(context, "failed", message);
           }
         } else if (context.turnState) {
@@ -7761,6 +8004,10 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           PROVIDER,
           input,
         );
+        const launchSettings = yield* readClaudeLaunchSettings;
+        const skillsPluginOptions = yield* resolveClaudeSkillsPluginOptions(
+          launchSettings.disabledSkillNames,
+        );
         const queryOptions: ClaudeQueryOptions = {
           ...(input.cwd ? { cwd: input.cwd } : {}),
           // Model identity and the spawn-fixed compaction override are separate settings.
@@ -7807,7 +8054,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           env: withClaudeArtifactOptIn(claudeSdkEnv, providerOptions?.enableArtifacts),
           spawnClaudeCodeProcess: bindClaudeProcessOwner(
             processOwner,
-            yield* providerProcessPriorityEnabled,
+            launchSettings.lowerProcessPriority,
           ),
           ...(input.cwd || input.additionalDirectories?.length
             ? {
@@ -7817,11 +8064,12 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 ],
               }
             : {}),
-          ...(agentGatewayCredentials
-            ? {
-                mcpServers: buildClaudeMcpServers(gatewaySessionLease!.connection),
-              }
-            : {}),
+          ...resolveClaudeMcpLaunchOptions({
+            connection: agentGatewayCredentials ? gatewaySessionLease!.connection : undefined,
+            hostProfileId: ACTIVE_AGENT_HOST_PROFILE.id,
+            loadUserMcpServers: launchSettings.loadUserMcpServers,
+          }),
+          ...skillsPluginOptions,
         };
 
         const queryRuntime = yield* Effect.tryPromise({
@@ -7958,6 +8206,13 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             accountDiscoveryKey,
             messageStream,
             processOwner,
+            readInstalledCliVersion: memoizeCliVersionRead(() =>
+              readClaudeCliVersion({
+                binaryPath: providerOptions?.binaryPath ?? "claude",
+                ...(input.cwd ? { cwd: input.cwd } : {}),
+                env: claudeSdkEnv,
+              }),
+            ),
             cacheProcessId,
             stoppedSignal: Deferred.makeUnsafe<void>(),
             pendingCompactionPreparations: new Set(),
@@ -7971,6 +8226,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             firstTurnSpawnModeAuthoritative: true,
             lastInteractionMode: undefined,
             currentApiModelId: apiModelId,
+            ...(modelSelection?.model ? { currentModelSlug: modelSelection.model } : {}),
             // A generated id is only a launch option until Claude emits conversation output.
             resumeSessionId: existingResumeSessionId,
             pendingApprovals,
@@ -8355,6 +8611,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             });
           }
           context.currentApiModelId = apiModelId;
+          context.currentModelSlug = modelSelection.model;
           context.rerouteOriginalApiModelId = undefined;
           if (apiModelChanged) {
             context.cacheObservation = claudeCacheForModel(context.cacheObservation, apiModelId);
@@ -8504,6 +8761,14 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           assistantTextBlockOrder: [],
           capturedProposedPlanKeys: new Set(),
           sawFileChange: false,
+          ...(context.currentModelSlug
+            ? {
+                requestedModel: {
+                  slug: context.currentModelSlug,
+                  apiModelId: context.currentApiModelId,
+                },
+              }
+            : {}),
           nextSyntheticAssistantBlockIndex: -1,
           assistantMessageBlockBase: 0,
         };
@@ -9289,6 +9554,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       env: NodeJS.ProcessEnv,
       binaryPath: string,
       discover: (queryRuntime: ClaudeQueryRuntime) => Promise<T>,
+      extraOptions?: Pick<ClaudeQueryOptions, "plugins">,
     ): Promise<T> {
       // Never spawn another discovery process until every previously unproven
       // process tree has been reaped successfully.
@@ -9313,6 +9579,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             persistSession: false,
             env,
             spawnClaudeCodeProcess: bindClaudeProcessOwner(processOwner, false),
+            ...extraOptions,
           },
         });
         const queryRuntime = tempQuery;
@@ -9341,16 +9608,24 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       env: NodeJS.ProcessEnv,
       binaryPath: string,
       artifactsEnabled: boolean,
+      skillsPluginOptions: Pick<ClaudeQueryOptions, "plugins">,
     ): Promise<ProviderListCommandsResult> =>
-      discoverViaTemporaryProcess(cwd, env, binaryPath, (queryRuntime) =>
-        queryRuntime
-          .supportedCommands()
-          .then((commands) =>
-            mapSupportedCommands(
-              commands,
-              resolveClaudeArtifactsState({ artifactsEnabled, commands }),
+      discoverViaTemporaryProcess(
+        cwd,
+        env,
+        binaryPath,
+        (queryRuntime) =>
+          queryRuntime
+            .supportedCommands()
+            .then((commands) =>
+              mapSupportedCommands(
+                commands,
+                resolveClaudeArtifactsState({ artifactsEnabled, commands }),
+              ),
             ),
-          ),
+        // Skills are slash commands too: load the same skills plugin a session
+        // gets, so the list matches what a live session reports.
+        skillsPluginOptions,
       );
 
     const discoverModelsViaTemporaryProcess = (
@@ -9431,6 +9706,9 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           input.instanceId,
         );
         const binaryPath = input.binaryPath ?? "claude";
+        const skillsPluginOptions = yield* resolveClaudeSkillsPluginOptions(
+          (yield* readClaudeLaunchSettings).disabledSkillNames,
+        );
         const pendingKey = JSON.stringify([discoveryKey, enableArtifacts]);
         let discoveryPromise = pendingCommandDiscoveries.get(pendingKey);
         if (!discoveryPromise) {
@@ -9445,6 +9723,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 withClaudeArtifactOptIn(claudeSdkEnv, enableArtifacts),
                 binaryPath,
                 enableArtifacts,
+                skillsPluginOptions,
               ),
             );
           discoveryPromise = started;
@@ -9483,9 +9762,252 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         cached: false,
       } satisfies ProviderListSkillsResult);
 
+    // `/mcp` asks the thread's own live session when it has one. Otherwise a
+    // workspace runtime answers: one Claude Code process per account and folder
+    // that stays up between calls, so a reopened view watches servers finish
+    // connecting instead of a fresh process's `pending`, and so a sign-in can
+    // finish. Claude Code receives the OAuth redirect on its own localhost
+    // listener, which lives only as long as that process.
+    interface ClaudeMcpWorkspaceRuntime {
+      readonly query: ClaudeQueryRuntime;
+      readonly processOwner: ClaudeProcessOwner;
+      stopTimer: ReturnType<typeof setTimeout> | undefined;
+      stopAt: number;
+      signInUntil: number;
+      closed: boolean;
+    }
+    const CLAUDE_MCP_WORKSPACE_IDLE_MS = 2 * 60_000;
+    const CLAUDE_MCP_SIGN_IN_WINDOW_MS = 10 * 60_000;
+    const mcpWorkspaceRuntimes = new Map<string, Promise<ClaudeMcpWorkspaceRuntime>>();
+
+    const closeMcpWorkspaceRuntime = (key: string, runtime: ClaudeMcpWorkspaceRuntime) =>
+      Effect.gen(function* () {
+        if (runtime.closed) return;
+        runtime.closed = true;
+        clearTimeout(runtime.stopTimer);
+        const current = mcpWorkspaceRuntimes.get(key);
+        if (current && (yield* Effect.promise(() => current.catch(() => undefined))) === runtime) {
+          mcpWorkspaceRuntimes.delete(key);
+        }
+        yield* Effect.sync(() => runtime.query.close());
+        yield* teardownDiscoveryProcess(runtime.processOwner);
+      }).pipe(Effect.ignore);
+
+    const keepMcpWorkspaceRuntime = (
+      key: string,
+      runtime: ClaudeMcpWorkspaceRuntime,
+      durationMs: number,
+    ) => {
+      const stopAt = Date.now() + durationMs;
+      if (runtime.closed || stopAt <= runtime.stopAt) return;
+      runtime.stopAt = stopAt;
+      clearTimeout(runtime.stopTimer);
+      runtime.stopTimer = setTimeout(() => {
+        void Effect.runPromise(closeMcpWorkspaceRuntime(key, runtime));
+      }, durationMs);
+      runtime.stopTimer.unref?.();
+    };
+
+    const startMcpWorkspaceRuntime = async (
+      key: string,
+      input: ProviderMcpAdapterInput,
+    ): Promise<ClaudeMcpWorkspaceRuntime> => {
+      await Effect.runPromise(teardownFailedDiscoveryProcesses());
+      const env = await Effect.runPromise(
+        resolveClaudeSdkEnv(input.homePath, input.environment, input.instanceId),
+      );
+      const processOwner: ClaudeProcessOwner = {};
+      let query: ClaudeQueryRuntime;
+      try {
+        // No skills plugin here: this process only reports MCP server status
+        // and holds sign-ins open, and never runs a turn that could use one.
+        query = await createQuery({
+          prompt: neverResolvingUserMessageStream(),
+          options: {
+            cwd: input.cwd,
+            pathToClaudeCodeExecutable: input.binaryPath ?? "claude",
+            settingSources: [...CLAUDE_SETTING_SOURCES],
+            permissionMode: "plan" as PermissionMode,
+            persistSession: false,
+            env,
+            spawnClaudeCodeProcess: bindClaudeProcessOwner(processOwner, false),
+          },
+        });
+      } catch (cause) {
+        await Effect.runPromise(teardownDiscoveryProcess(processOwner).pipe(Effect.ignore));
+        throw cause;
+      }
+      const runtime: ClaudeMcpWorkspaceRuntime = {
+        query,
+        processOwner,
+        stopTimer: undefined,
+        stopAt: 0,
+        signInUntil: 0,
+        closed: false,
+      };
+      // Iterating drives the init handshake the control requests wait for; an
+      // exited process ends the loop and retires the runtime.
+      void (async () => {
+        for await (const message of query) {
+          void message;
+        }
+      })()
+        .catch(() => undefined)
+        .finally(() => {
+          void Effect.runPromise(closeMcpWorkspaceRuntime(key, runtime));
+        });
+      keepMcpWorkspaceRuntime(key, runtime, CLAUDE_MCP_WORKSPACE_IDLE_MS);
+      return runtime;
+    };
+
+    const acquireMcpWorkspaceRuntime = async (
+      input: ProviderMcpAdapterInput,
+    ): Promise<ClaudeMcpWorkspaceRuntime> => {
+      // The folder is part of the key: project servers and per-project
+      // enablement differ between folders.
+      const key = claudeDiscoveryKey(input);
+      const existing = await mcpWorkspaceRuntimes.get(key)?.catch(() => undefined);
+      if (existing && !existing.closed) {
+        // A reload restarts Claude Code so it reads its config again, unless a
+        // sign-in is still waiting for its redirect in this process.
+        if (!input.forceReload || existing.signInUntil > Date.now()) {
+          keepMcpWorkspaceRuntime(key, existing, CLAUDE_MCP_WORKSPACE_IDLE_MS);
+          return existing;
+        }
+        await Effect.runPromise(closeMcpWorkspaceRuntime(key, existing));
+      }
+      const startup = startMcpWorkspaceRuntime(key, input);
+      mcpWorkspaceRuntimes.set(key, startup);
+      startup.catch(() => {
+        if (mcpWorkspaceRuntimes.get(key) === startup) mcpWorkspaceRuntimes.delete(key);
+      });
+      return startup;
+    };
+
+    const closeAllMcpWorkspaceRuntimes = () =>
+      settleConcurrentTeardowns([...mcpWorkspaceRuntimes], ([key, startup]) =>
+        Effect.promise(() => startup.catch(() => undefined)).pipe(
+          Effect.flatMap((runtime) =>
+            runtime ? closeMcpWorkspaceRuntime(key, runtime) : Effect.void,
+          ),
+        ),
+      );
+
+    const resolveMcpRuntime = (input: Omit<ProviderMcpAdapterInput, "serverName">) =>
+      Effect.gen(function* () {
+        // The thread's own session is the truth for that thread, as long as it
+        // runs on the account this request resolved to.
+        const ownContext = input.threadId
+          ? sessions.get(ThreadId.makeUnsafe(input.threadId))
+          : undefined;
+        if (
+          ownContext &&
+          !ownContext.stopped &&
+          ownContext.accountDiscoveryKey === claudeDiscoveryKey({ ...input, includeCwd: false })
+        ) {
+          return {
+            source: "session" as const,
+            query: ownContext.query,
+            keepForSignIn: (): void => undefined,
+          };
+        }
+        const runtime = yield* Effect.tryPromise({
+          try: () => acquireMcpWorkspaceRuntime(input),
+          catch: (cause) =>
+            new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: CLAUDE_DISCOVERY_THREAD_ID,
+              detail: toMessage(cause, "Could not start Claude to read its MCP servers."),
+              cause,
+            }),
+        });
+        return {
+          source: "workspace" as const,
+          query: runtime.query,
+          keepForSignIn: (): void => {
+            runtime.signInUntil = Date.now() + CLAUDE_MCP_SIGN_IN_WINDOW_MS;
+            keepMcpWorkspaceRuntime(
+              claudeDiscoveryKey(input),
+              runtime,
+              CLAUDE_MCP_SIGN_IN_WINDOW_MS,
+            );
+          },
+        };
+      });
+
+    const mcpControlUnavailable = (method: string) =>
+      new ProviderAdapterRequestError({
+        provider: PROVIDER,
+        method,
+        detail: "This Claude Code version cannot report or manage MCP servers.",
+      });
+
+    const listMcpServers: NonNullable<ClaudeAdapterShape["listMcpServers"]> = (input) =>
+      Effect.gen(function* () {
+        const runtime = yield* resolveMcpRuntime(input);
+        const readStatus = runtime.query.mcpServerStatus;
+        if (!readStatus) return yield* mcpControlUnavailable("mcpServerStatus");
+        const statuses = yield* Effect.tryPromise({
+          try: () => readStatus.call(runtime.query),
+          catch: (cause) => toRequestError(CLAUDE_DISCOVERY_THREAD_ID, "mcpServerStatus", cause),
+        });
+        const servers = mapClaudeMcpServerStatuses(statuses, SYNARA_MCP_SERVER_NAME);
+        return {
+          servers: input.serverName
+            ? servers.filter((server) => server.name === input.serverName)
+            : servers,
+          source: runtime.source,
+        };
+      });
+
+    const runMcpServerAction: NonNullable<ClaudeAdapterShape["runMcpServerAction"]> = (input) =>
+      Effect.gen(function* () {
+        const runtime = yield* resolveMcpRuntime(input);
+        const query = runtime.query;
+        const request = <T>(method: string, call: (() => Promise<T>) | undefined) =>
+          call
+            ? Effect.tryPromise({
+                try: call,
+                catch: (cause) => toRequestError(CLAUDE_DISCOVERY_THREAD_ID, method, cause),
+              })
+            : Effect.fail(mcpControlUnavailable(method));
+        switch (input.action) {
+          case "reconnect":
+            yield* request(
+              "reconnectMcpServer",
+              query.reconnectMcpServer && (() => query.reconnectMcpServer!(input.serverName)),
+            );
+            return {};
+          case "enable":
+          case "disable":
+            yield* request(
+              "toggleMcpServer",
+              query.toggleMcpServer &&
+                (() => query.toggleMcpServer!(input.serverName, input.action === "enable")),
+            );
+            return {};
+          case "authenticate": {
+            const response = yield* request(
+              "mcpAuthenticate",
+              query.mcpAuthenticate && (() => query.mcpAuthenticate!(input.serverName)),
+            );
+            runtime.keepForSignIn();
+            const authUrl = nonEmptyTrimmed(response?.authUrl);
+            return authUrl ? { authUrl } : {};
+          }
+          case "sign-out":
+            yield* request(
+              "mcpClearAuth",
+              query.mcpClearAuth && (() => query.mcpClearAuth!(input.serverName)),
+            );
+            return {};
+        }
+      });
+
     const stopAll: ClaudeAdapterShape["stopAll"] = () =>
       settleConcurrentTeardowns(
         [
+          closeAllMcpWorkspaceRuntimes(),
           settleConcurrentTeardowns([...sessions.values()], (context) =>
             stopSessionInternal(context, { emitExitEvent: true }),
           ),
@@ -9500,6 +10022,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     yield* Effect.addFinalizer(() =>
       settleConcurrentTeardowns(
         [
+          closeAllMcpWorkspaceRuntimes(),
           settleConcurrentTeardowns([...sessions.values()], (context) =>
             stopSessionInternal(context, { emitExitEvent: false }),
           ),
@@ -9635,6 +10158,8 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       stopAll,
       getComposerCapabilities,
       listCommands,
+      listMcpServers,
+      runMcpServerAction,
       listSkills,
       listModels,
       listAgents,

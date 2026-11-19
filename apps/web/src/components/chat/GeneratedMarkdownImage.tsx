@@ -1,6 +1,7 @@
 // FILE: GeneratedMarkdownImage.tsx
 // Purpose: Renders Codex-generated images embedded in assistant markdown with
 //          loading skeleton, hover overlay (expand/download), and inline error card.
+//          The thumbnail size serves the image previews under tool-call rows.
 // Layer: Web chat presentation component
 // Exports: GeneratedMarkdownImage
 // Notes: Pure UI; loading state and the error card are shared with the editor
@@ -13,11 +14,13 @@ import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { DownloadIcon, Loader2Icon, Maximize2 } from "~/lib/icons";
 import type { ProjectCreateLocalFilePreviewGrantResult } from "@synara/contracts";
-import { buildLocalImageUrl, normalizeMarkdownImagePath } from "~/lib/localImageUrls";
+import { normalizeMarkdownImagePath } from "~/lib/localImageUrls";
 import { toAttachmentPreviewUrl } from "~/lib/wsHttpUrl";
 import {
+  fetchGrantedLocalImageUrl,
   isLocalPreviewGrantUsable,
   projectLocalPreviewGrantQueryOptions,
+  retryLocalPreviewGrant,
 } from "~/lib/projectReactQuery";
 
 import {
@@ -36,6 +39,8 @@ export interface GeneratedMarkdownImageProps {
   threadId?: string | null | undefined;
   attachmentId?: string | undefined;
   isLinked?: boolean;
+  /** `thumbnail` is the smaller frame used under tool-call rows. */
+  size?: "prose" | "thumbnail";
   onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
 }
 
@@ -100,15 +105,9 @@ function GeneratedMarkdownImageContent(
     // An HTTP denial must not reuse a token invalidated by a server restart.
     staleTime: 0,
   });
-  const retryGrant = (failureCount: number, error: unknown) =>
-    failureCount < 2 &&
-    typeof error === "object" &&
-    error !== null &&
-    "retryable" in error &&
-    error.retryable === true;
   const grantQuery = useQuery({
     ...grantOptions,
-    retry: retryGrant,
+    retry: retryLocalPreviewGrant,
     refetchInterval: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -148,7 +147,7 @@ function GeneratedMarkdownImageContent(
         // Keep the frozen URL until fresh bytes are authorized. Clearing it first could
         // restore cached grant data or issue another ungranted workspace request.
         void queryClient
-          .fetchQuery({ ...grantOptions, retry: retryGrant })
+          .fetchQuery({ ...grantOptions, retry: retryLocalPreviewGrant })
           .then((grant) => {
             if (mounted.current && isLocalPreviewGrantUsable(grant)) setPreviewGrant(grant);
           })
@@ -169,15 +168,7 @@ function GeneratedMarkdownImageContent(
   const resolveGrantedUrl = async (download: boolean) => {
     if (resourceUrl || !needsGrant || sourcePath === null)
       return download ? downloadUrl : previewUrl;
-    // A backgrounded chat can outlive the grant TTL. Renew at the point of use.
-    const grant = await queryClient.fetchQuery({ ...grantOptions, retry: retryGrant });
-    return buildLocalImageUrl({
-      src,
-      cwd,
-      canonicalPath: grant.canonicalPath,
-      download,
-      grant: grant.grant,
-    });
+    return fetchGrantedLocalImageUrl(queryClient, { src, cwd, threadId: props.threadId, download });
   };
   const accessibleName = alt?.trim() || "Generated image";
   const downloadImage = useLocalImageDownloadClick({
@@ -238,7 +229,11 @@ function GeneratedMarkdownImageContent(
   }
 
   return (
-    <span className="chat-generated-image" data-status={resolvingGrant ? "loading" : status}>
+    <span
+      className="chat-generated-image"
+      data-size={props.size === "thumbnail" ? "thumbnail" : undefined}
+      data-status={resolvingGrant ? "loading" : status}
+    >
       <button
         type="button"
         className="chat-generated-image__frame"

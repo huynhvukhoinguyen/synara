@@ -8,7 +8,7 @@
 //          Open in GitHub ride on the View PR row. The thread's other linked PRs follow as
 //          compact rows; a thread without any PR offers a single "Link pull request" row.
 // Layer: Environment panel section
-// Depends on: git status/PR-snapshot React Query helpers, the pull request action mutation,
+// Depends on: branch-PR/PR-snapshot React Query helpers, the pull request action mutation,
 //             and the shared Environment row skin.
 
 import type {
@@ -70,7 +70,10 @@ import {
 } from "../../pullRequest/pullRequestStack.logic";
 import { PULL_REQUEST_AUTO_FIX_ON } from "~/betaFeatures";
 import { addChatPullRequestContext } from "~/lib/chatReferences";
-import { gitPullRequestSnapshotQueryOptions, gitStatusQueryOptions } from "~/lib/gitReactQuery";
+import {
+  gitBranchPullRequestQueryOptions,
+  gitPullRequestSnapshotQueryOptions,
+} from "~/lib/gitReactQuery";
 import {
   ChatBubbleIcon,
   ChatBubblePlusIcon,
@@ -118,7 +121,7 @@ import {
   describePullRequestAutoFix,
   describePullRequestComment,
   findPullRequestAutoFixState,
-  PULL_REQUEST_CHECK_STATUS_LABELS,
+  pullRequestCheckStatusLabel,
   PULL_REQUEST_CHECKS_TONE_TEXT_CLASS,
   summarizePullRequestChecks,
   summarizePullRequestComments,
@@ -218,6 +221,7 @@ const ACTION_SUCCESS_TITLES: Record<PullRequestAction, string> = {
   draft: "Converted to draft",
   close: "Pull request closed",
   reopen: "Pull request reopened",
+  approve: "Pull request approved",
 };
 
 const ACTION_PENDING_TITLES: Record<Exclude<PullRequestAction, "merge">, string> = {
@@ -225,6 +229,7 @@ const ACTION_PENDING_TITLES: Record<Exclude<PullRequestAction, "merge">, string>
   draft: "Converting to draft...",
   close: "Closing pull request...",
   reopen: "Reopening pull request...",
+  approve: "Approving pull request...",
 };
 
 const MERGE_PENDING_TITLES: Record<PullRequestMergeMethod, string> = {
@@ -298,7 +303,7 @@ function ChecksMenuRow({
       <PullRequestCheckStatusIcon status={check.status} />
       <span className="min-w-0 truncate text-[var(--color-text-foreground)]">{check.name}</span>
       <span className="shrink-0 text-ui-xs text-muted-foreground">
-        {PULL_REQUEST_CHECK_STATUS_LABELS[check.status]}
+        {pullRequestCheckStatusLabel(check.status)}
       </span>
     </MenuRow>
   );
@@ -409,9 +414,9 @@ export function EnvironmentPullRequestSection({
   const queryClient = useQueryClient();
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<PullRequestConfirmAction | null>(null);
-  // Share the git block's cache, but revalidate stale status when this always-mounted
+  // Share the git block's cache, but revalidate a stale lookup when this always-mounted
   // panel opens so an earlier missing PR does not linger until the next polling tick.
-  const { data: gitStatus } = useQuery(gitStatusQueryOptions(gitCwd, enabled));
+  const { data: branchPullRequest } = useQuery(gitBranchPullRequestQueryOptions(gitCwd, enabled));
   // `null` while the chat is still a local draft: links need a server thread.
   const threadPullRequestLinks = useStore((state) =>
     activeThreadId
@@ -422,15 +427,15 @@ export function EnvironmentPullRequestSection({
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const linkedPullRequests = visiblePullRequestLinks(threadPullRequestLinks);
   const currentLink = resolveCurrentPullRequestLink(threadPullRequestLinks);
-  const reportedBranchPr = gitStatus?.pr ?? null;
-  // Git status can still report a PR after its thread link was dismissed.
+  const reportedBranchPr = branchPullRequest?.pr ?? null;
+  // The branch lookup can still report a PR after its thread link was dismissed.
   const branchPr =
     reportedBranchPr && !isPullRequestDismissed(threadPullRequestLinks, reportedBranchPr.url)
       ? reportedBranchPr
       : null;
   // The thread's own PR wins over whatever the checkout's branch has: a shared checkout can sit
   // on another thread's branch, and a linked PR stays the thread's PR after the branch moves.
-  // When both are the same PR, the branch status is the fresher copy.
+  // When both are the same PR, the branch lookup is the fresher copy.
   const pr = currentLink
     ? branchPr &&
       pullRequestLinkKey(branchPr.url) === pullRequestLinkKey(currentLink.pullRequest.url)
@@ -446,8 +451,8 @@ export function EnvironmentPullRequestSection({
     }),
   );
 
-  // The snapshot can report a merge/close before git status catches up. Once git status
-  // also settles, prefer it over a cached open snapshot whose polling is now disabled.
+  // The snapshot can report a merge/close before the branch lookup catches up. Once that
+  // lookup also settles, prefer it over a cached open snapshot whose polling is now disabled.
   const livePr = snapshotQuery.data?.pullRequest ?? null;
   const displayPr = pr?.state === "open" ? (livePr ?? pr) : pr;
 

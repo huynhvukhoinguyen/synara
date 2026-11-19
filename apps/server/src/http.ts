@@ -69,13 +69,13 @@ import {
 import { ProjectAgentRepository } from "./persistence/Services/ProjectAgentRepository";
 import { resolveCachedEditorIcon } from "./editorAppIcons";
 import { LOCAL_IMAGE_ROUTE_PATH, resolveAllowedLocalPreviewFile } from "./localImageFiles.ts";
+import { toolResultImagesRoot } from "./provider/toolResultImages.ts";
 import type { ProjectFaviconResolverShape } from "./project/Services/ProjectFaviconResolver";
 import { resolveScratchWorkspacesRoot } from "./scratchWorkspaces.ts";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
-import { getEnabledProviderAdapter } from "./provider/enabledProviderAdapter";
 import { threadArchiveChunks, threadArchiveFileName } from "./orchestration/exportThreadArchive";
 import type { ServerReadiness } from "./server/readiness";
 import { ServerSettingsService } from "./serverSettings";
@@ -1013,6 +1013,7 @@ export const localImageEffectRouteLayer = HttpRouter.add(
         cwd: url.searchParams.get("cwd"),
         codexHomePaths,
         scratchWorkspacesRoot: resolveScratchWorkspacesRoot(),
+        toolImagesRoot: toolResultImagesRoot(config.stateDir),
         allowAbsoluteLocalPreviewFile: true,
         previewGrant: url.searchParams.get("grant"),
       }).catch(() => null),
@@ -1374,7 +1375,7 @@ const binaryUploadEffectHandler = Effect.gen(function* () {
           { status: 409, headers: corsHeaders },
         );
       }
-      const adapter = yield* getEnabledProviderAdapter(instance.driver, serverSettings, registry);
+      const adapter = yield* registry.getByProvider(instance.driver);
       if (!adapter.transcribeVoice) {
         return HttpServerResponse.jsonUnsafe(
           { error: `Voice transcription is unavailable for provider '${provider}'.` },

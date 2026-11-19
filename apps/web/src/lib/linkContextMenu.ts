@@ -13,7 +13,9 @@ import { createContext } from "react";
 
 import type { GitHubLinkOpenTarget } from "~/appSettings";
 import { copyTextToClipboard } from "~/hooks/useCopyToClipboard";
+import { contextMenuGroup } from "~/lib/contextMenuGroup";
 import { openExternalLink } from "~/lib/linkChips";
+import { readEmbedMode } from "~/embedMode";
 import { readNativeApi } from "~/nativeApi";
 
 /** In-app destinations a chat surface offers for the links it renders. */
@@ -84,6 +86,18 @@ export async function showLinkContextMenu(input: {
   }
   const { url, actions } = input;
   const openGitHubItem = resolveGitHubItemLinkOpener(url, actions);
+  const embed = readEmbedMode();
+  const browserItems = embed?.browserPanel
+    ? contextMenuGroup({ id: "open-link-in", label: t("workspace:linkMenuOpenIn") }, [
+        { id: "open-in-browser", label: t("workspace:linkMenuLatticePanel") },
+        { id: "open-external", label: t("workspace:linkMenuDefaultBrowser") },
+      ])
+    : [
+        ...(!embed && actions
+          ? [{ id: "open-in-browser" as const, label: t("workspace:linkMenuBrowser") }]
+          : []),
+        { id: "open-external" as const, label: t("git:openInExternalBrowser") },
+      ];
   const clicked = await api.contextMenu.show(
     [
       ...(openGitHubItem
@@ -97,10 +111,7 @@ export async function showLinkContextMenu(input: {
             },
           ]
         : []),
-      ...(actions
-        ? [{ id: "open-in-browser" as const, label: t("workspace:linkMenuBrowser") }]
-        : []),
-      { id: "open-external" as const, label: t("git:openInExternalBrowser") },
+      ...browserItems,
       { id: "copy-link" as const, label: t("computer:panel_copyLink"), separatorBefore: true },
     ],
     input.position,
@@ -110,11 +121,12 @@ export async function showLinkContextMenu(input: {
     return;
   }
   if (clicked === "open-in-browser") {
-    actions?.openInBrowserPanel(url);
+    if (embed) openExternalLink(url, "panel");
+    else actions?.openInBrowserPanel(url);
     return;
   }
   if (clicked === "open-external") {
-    openExternalLink(url);
+    openExternalLink(url, "external");
     return;
   }
   if (clicked === "copy-link") {

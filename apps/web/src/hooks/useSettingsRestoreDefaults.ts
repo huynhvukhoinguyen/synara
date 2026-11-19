@@ -16,7 +16,7 @@ import {
   DIFF_RENDER_MODE_STORAGE_KEY,
   DiffRenderModeSchema,
 } from "~/diffRenderMode";
-import { useTranslation } from "~/i18n";
+import { getFormatLocale, useTranslation } from "~/i18n";
 import { getNavigatorPlatform, isMacPlatform } from "~/lib/utils";
 import { ensureNativeApi, readNativeApi } from "~/nativeApi";
 import { sameProviderOrder } from "~/providerOrdering";
@@ -52,11 +52,6 @@ export function useSettingsRestoreDefaults({
   const isInstallSettingsDirty = isProviderInstallSettingsDirty(settings, defaults);
   const hiddenProviderCount = new Set(settings.hiddenProviders).size;
   const isProviderOrderDirty = !sameProviderOrder(settings.providerOrder, defaults.providerOrder);
-  const isProviderActivityDirty =
-    settings.disabledProviders.length !== defaults.disabledProviders.length ||
-    settings.disabledProviders.some(
-      (provider, index) => provider !== defaults.disabledProviders[index],
-    );
 
   const changedSettingLabels = [
     ...(theme !== "system" ? ["onboarding:changed_theme"] : []),
@@ -187,6 +182,9 @@ export function useSettingsRestoreDefaults({
     ...(settings.diffWordWrap !== defaults.diffWordWrap
       ? ["settings:changed_diffLineWrapping"]
       : []),
+    ...(settings.claudeLoadUserMcpServers !== defaults.claudeLoadUserMcpServers
+      ? ["lattice:loadMyMCPServersInClaude"]
+      : []),
     ...(settings.githubLinkOpenTarget !== defaults.githubLinkOpenTarget
       ? ["settings:openPullRequestsAndIssues"]
       : []),
@@ -210,6 +208,11 @@ export function useSettingsRestoreDefaults({
     settings.sourceControlCustomInstructions !== defaults.sourceControlCustomInstructions
       ? ["settings:sourceControlWritingStyle"]
       : []),
+    ...(settings.proofreadModel !== undefined ? ["lattice:proofreadingModel"] : []),
+    ...(settings.compileRepairProvider !== defaults.compileRepairProvider ||
+    settings.compileRepairModel !== defaults.compileRepairModel
+      ? ["lattice:compileRepairModel"]
+      : []),
     ...(settings.customCodexModels.length > 0 ||
     settings.customClaudeModels.length > 0 ||
     settings.customCursorModels.length > 0 ||
@@ -221,7 +224,6 @@ export function useSettingsRestoreDefaults({
       ? ["settings:changed_customModels"]
       : []),
     ...(isInstallSettingsDirty ? ["settings:changed_providerInstalls"] : []),
-    ...(isProviderActivityDirty ? ["settings:providerActivity"] : []),
     ...(hiddenProviderCount > 0 ? ["settings:changed_providerVisibility"] : []),
     ...(isProviderOrderDirty ? ["settings:changed_providerOrder"] : []),
   ].map((label) => t(label));
@@ -234,7 +236,7 @@ export function useSettingsRestoreDefaults({
       [
         t("settings:restoreDefaultSettings"),
         t("settings:thisWillReset", {
-          settings: changedSettingLabels.join(", "),
+          settings: new Intl.ListFormat(getFormatLocale()).format(changedSettingLabels),
         }),
       ].join("\n"),
     );

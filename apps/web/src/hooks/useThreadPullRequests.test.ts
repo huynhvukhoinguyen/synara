@@ -99,7 +99,16 @@ describe("useThreadPullRequests requireLiveStatus", () => {
     upstreamBranch: "origin/feat/x",
     aheadCount: 0,
     behindCount: 0,
-    pr: null,
+  };
+
+  // The fork serves the branch PR from its own query (bc54a5966); live status counts once
+  // both have answered. Seed both, with no live PR on the branch.
+  const seedLiveStatusWithoutBranchPullRequest = (queryClient: QueryClient) => {
+    queryClient.setQueryData(["git", "status", WORKTREE], liveStatusOnBranch);
+    queryClient.setQueryData(["git", "pull-request", WORKTREE, "branch"], {
+      branch: "feat/x",
+      pr: null,
+    });
   };
 
   const threadSource = (
@@ -162,9 +171,7 @@ describe("useThreadPullRequests requireLiveStatus", () => {
     const map = readPullRequestMap({
       threads: [threadSource()],
       requireLiveStatus: true,
-      seed: (queryClient) => {
-        queryClient.setQueryData(["git", "status", WORKTREE], liveStatusOnBranch);
-      },
+      seed: seedLiveStatusWithoutBranchPullRequest,
     });
     // Status resolved without a live PR and the stored-PR query has not
     // returned: the raw lastKnownPr must not badge the thread.
@@ -189,9 +196,11 @@ describe("useThreadPullRequests requireLiveStatus", () => {
           }),
         ],
         requireLiveStatus,
+        // The fork serves the branch PR from its own query; the live PR sits there.
         seed: (queryClient) => {
-          queryClient.setQueryData(["git", "status", WORKTREE], {
-            ...liveStatusOnBranch,
+          queryClient.setQueryData(["git", "status", WORKTREE], liveStatusOnBranch);
+          queryClient.setQueryData(["git", "pull-request", WORKTREE, "branch"], {
+            branch: "feat/x",
             pr: openStoredPr,
           });
         },
@@ -206,7 +215,7 @@ describe("useThreadPullRequests requireLiveStatus", () => {
       threads: [threadSource()],
       requireLiveStatus: true,
       seed: (queryClient) => {
-        queryClient.setQueryData(["git", "status", WORKTREE], liveStatusOnBranch);
+        seedLiveStatusWithoutBranchPullRequest(queryClient);
         queryClient.setQueryData(["git", "pull-request", WORKTREE, openStoredPr.url], {
           pullRequest: openStoredPr,
         });

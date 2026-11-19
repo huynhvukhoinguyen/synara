@@ -4,13 +4,27 @@
 // Layer: Settings UI
 // Exports: ProviderSetupGuideButton, ProviderDocsLinks
 
+import type { MouseEvent } from "react";
+
+import { postExternalLinkToLattice, readEmbedMode } from "~/embedMode";
 import { useTranslation } from "~/i18n";
 import { ExternalLinkIcon } from "~/lib/icons";
+import { openExternalLink } from "~/lib/linkChips";
 import { cn } from "~/lib/utils";
 import { SETTINGS_OUTLINED_SURFACE_CLASS_NAME } from "~/settingsPanelStyles";
 
 import { Button } from "../../ui/button";
 import type { ProviderInstallSettings } from "./providerInstallSettings";
+
+// In Lattice's frame a plain target="_blank" link opens nothing, so Lattice opens it.
+function openDocsLink(event: MouseEvent<HTMLAnchorElement>, href: string): void {
+  event.preventDefault();
+  event.stopPropagation();
+  const embedConfig = readEmbedMode();
+  if (!embedConfig || !postExternalLinkToLattice(embedConfig, href)) {
+    openExternalLink(href);
+  }
+}
 
 /** Opens an agent's setup guide; the link's name says which agent it is for. */
 export function ProviderSetupGuideButton(props: {
@@ -24,7 +38,14 @@ export function ProviderSetupGuideButton(props: {
     <Button
       variant="outline"
       size={props.size}
-      render={<a href={props.href} target="_blank" rel="noreferrer" />}
+      render={
+        <a
+          href={props.href}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(event) => openDocsLink(event, props.href)}
+        />
+      }
       aria-label={t("settings:setupGuide2", { value0: props.title })}
     >
       <span>{t("settings:setupGuide")}</span>
@@ -58,7 +79,14 @@ export function ProviderDocsLinks({
               key={`${doc.label}:${doc.href}`}
               variant="outline"
               size="sm"
-              render={<a href={doc.href} target="_blank" rel="noreferrer" />}
+              render={
+                <a
+                  href={doc.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(event) => openDocsLink(event, doc.href)}
+                />
+              }
             >
               <span>{t(doc.label)}</span>
               <ExternalLinkIcon className="size-3" />

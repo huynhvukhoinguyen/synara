@@ -21,6 +21,7 @@ import {
   type AppSettings,
   type ProviderInstanceOption,
 } from "~/appSettings";
+import { isSynaraEmbedMode } from "~/embedMode";
 import { useTranslation } from "~/i18n";
 import { Loader2Icon, PlayIcon, XIcon } from "~/lib/icons";
 import { providerAccountIdentityLabel } from "~/lib/providerInstancePresentation";
@@ -277,9 +278,12 @@ export function ProviderAccountEditor(props: {
                   updateSettings={props.updateSettings}
                 />
               ))}
-              <span className="block text-ui-sm text-muted-foreground">
-                {t("settings:accounts_providerOptionsInProviders", { value0: providerLabel })}
-              </span>
+              {/* Lattice opens this editor inside the agent's own row, beside those options. */}
+              {isSynaraEmbedMode() ? null : (
+                <span className="block text-ui-sm text-muted-foreground">
+                  {t("settings:accounts_providerOptionsInProviders", { value0: providerLabel })}
+                </span>
+              )}
               {provider === "codex" && props.settings.codexAccounts.length > 0 ? (
                 <CodexDefaultAccountControl
                   settings={props.settings}

@@ -72,6 +72,8 @@ import {
   removeInlineTerminalContextPlaceholder,
 } from "../lib/terminalContext";
 import { extractTrailingBrowserAnnotations } from "../lib/browserAnnotations";
+import { setLiveLatticeHostContext } from "../lib/latticeHostContext";
+import { LATTICE_HOST_CONTEXT } from "../embedMode";
 import { isMacNavigatorPlatform, randomUUID } from "../lib/utils";
 import { STARRED_MODELS_STORAGE_KEY } from "../lib/starredModels";
 import { readNativeApi } from "../nativeApi";
@@ -189,6 +191,10 @@ interface TestFixture {
   projectAgentOverviews: Record<string, unknown>;
   projectAgentSummariesPending?: boolean;
   connectorProposals: McpConnectorProposal[];
+  // Answered for server.getEnvironment when set; the neutral fixture leaves the platform unknown.
+  serverEnvironment?: ExecutionEnvironmentDescriptor;
+  // Issues local preview grants when set; otherwise grant requests fail as malformed.
+  issueLocalPreviewGrants?: boolean;
 }
 
 let fixture: TestFixture;
@@ -612,6 +618,28 @@ function findThreadDetailFromFixtureSnapshot(
   threadId: ThreadId,
 ): OrchestrationReadModel["threads"][number] | null {
   return fixture.snapshot.threads.find((entry) => entry.id === threadId) ?? null;
+}
+
+/**
+ * The right dock's sidebar state. The dock stays mounted while collapsed (it slides
+ * offcanvas), so "collapsed" also proves the surface rendered a dock at all.
+ */
+function rightDockState(): string | null {
+  return (
+    document
+      .querySelector("[data-right-dock-content]")
+      ?.closest('[data-side="right"][data-state]')
+      ?.getAttribute("data-state") ?? null
+  );
+}
+
+/** The transcript row button for a read of `fileName`, or null when it renders none. */
+function readRow(fileName: string): HTMLElement | null {
+  return (
+    Array.from(document.querySelectorAll<HTMLElement>("button")).find(
+      (element) => element.textContent?.trim() === `Read ${fileName}`,
+    ) ?? null
+  );
 }
 
 /** The rows of the open fallback context menu. */
@@ -1374,6 +1402,16 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   if (tag === WS_METHODS.serverGetConfig) {
     return fixture.serverConfig;
   }
+  if (tag === WS_METHODS.serverGetEnvironment && fixture.serverEnvironment) {
+    return fixture.serverEnvironment;
+  }
+  if (tag === WS_METHODS.projectsCreateLocalFilePreviewGrant && fixture.issueLocalPreviewGrants) {
+    return {
+      grant: "browser-test-preview-grant",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      ...(typeof body.path === "string" ? { canonicalPath: body.path } : {}),
+    };
+  }
   if (tag === WS_METHODS.providerListModels) {
     // Keep the full-app fixture contract-valid and neutral. Returning the
     // generic `{}` fallback makes real discovery retry malformed responses,
@@ -1435,6 +1473,12 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
       behindCount: 0,
       pr: null,
     };
+  }
+  // The fork serves the branch PR on its own RPC (bc54a5966); an unanswered lookup
+  // fails and retries with backoff, holding up every git refresh that awaits it.
+  if (tag === WS_METHODS.gitBranchPullRequest) {
+    const cwd = typeof body.cwd === "string" ? body.cwd : null;
+    return { branch: cwd ? (fixture.gitBranchByCwd[cwd] ?? "main") : "main", pr: null };
   }
   if (tag === WS_METHODS.gitCreateWorktree) {
     const requestedBranch =
@@ -2758,6 +2802,231 @@ describe("ChatView transcript geometry (full app)", () => {
       }
     },
   );
+
+  // Lattice's embedded panel has no Environment panel to move quota warnings into, so
+  // an approaching limit keeps its warning capsule above the composer there.
+  it("keeps the quota warning at the composer in Lattice's embedded chat", async () => {
+    sessionStorage.setItem(
+      "synara.poc.embed-mode",
+      JSON.stringify({
+        workspaceRoot: "/repo/project",
+        theme: "light",
+        surface: "chrome",
+        hostOrigin: window.location.origin,
+        locale: "en",
+      }),
+    );
+    onTestFinished(() => sessionStorage.removeItem("synara.poc.embed-mode"));
+    const base = createSnapshotWithInlineToolOverflow({ active: false });
+    const thread = base.threads[0]!;
+    const turnId = thread.latestTurn!.turnId;
+    const snapshot: OrchestrationReadModel = {
+      ...base,
+      threads: [
+        {
+          ...thread,
+          modelSelection: { provider: "claudeAgent", model: "claude-opus-4-7" },
+          session: thread.session ? { ...thread.session, providerName: "claudeAgent" } : null,
+          messages: [{ ...thread.messages.at(-3)!, turnId }, ...thread.messages.slice(-2)],
+          activities: [
+            ...thread.activities,
+            {
+              id: EventId.makeUnsafe("embed-usage-warning"),
+              kind: "account.rate-limits.updated",
+              summary: "Rate limits updated",
+              createdAt: isoAt(1_109),
+              tone: "info",
+              turnId,
+              payload: {
+                provider: "claudeAgent",
+                providerInstanceId: "claudeAgent",
+                status: "allowed_warning",
+                utilization: 0.91,
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, width: 1_400 },
+      snapshot,
+    });
+    try {
+      await waitForComposerEditor();
+      expect(page.getByRole("button", { name: /Toggle environment panel/ }).query()).toBeNull();
+      const warning = page.getByTestId("composer-usage-limit-warning");
+      await expect.element(warning, { timeout: 3_000 }).toBeVisible();
+      await expect.element(warning).toHaveTextContent("91% used");
+      expect(
+        document.querySelector('[data-chat-composer-form="true"]')!.contains(warning.element()),
+      ).toBe(true);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // Lattice's live editor selection floats a Context bar above the composer. The
+  // slash menu opens upward from the composer too, so it must clear that bar
+  // instead of opening behind it with its rows covered.
+  it("opens the slash menu above Lattice's floating context bar", async () => {
+    sessionStorage.setItem(
+      "synara.poc.embed-mode",
+      JSON.stringify({
+        workspaceRoot: "/repo/project",
+        theme: "light",
+        surface: "chrome",
+        hostOrigin: window.location.origin,
+        locale: "en",
+      }),
+    );
+    onTestFinished(() => sessionStorage.removeItem("synara.poc.embed-mode"));
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, width: 520 },
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-embed-slash-menu" as MessageId,
+        targetText: "embed slash menu",
+      }),
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      setLiveLatticeHostContext({
+        type: LATTICE_HOST_CONTEXT,
+        version: 1,
+        workspaceRoot: "/repo/project",
+        activeSurface: "editor",
+        editor: { path: "main.tex", line: 321, column: 0, selection: "x".repeat(846) },
+      });
+      const contextBar = page.getByTestId("composer-lattice-context");
+      await expect.element(contextBar).toBeVisible();
+
+      editor.focus();
+      await userEvent.keyboard("/pla");
+      const row = page.getByRole("option", { name: /plan/i }).first();
+      await expect.element(row).toBeVisible();
+
+      const menu = row.element().closest<HTMLElement>('[role="listbox"]')!;
+      const menuRect = menu.getBoundingClientRect();
+      const barRect = contextBar.element().getBoundingClientRect();
+      expect(menuRect.bottom).toBeLessThanOrEqual(barRect.top);
+      const rowRect = row.element().getBoundingClientRect();
+      const topmost = document.elementFromPoint(
+        rowRect.left + rowRect.width / 2,
+        rowRect.top + rowRect.height / 2,
+      );
+      expect(row.element().contains(topmost)).toBe(true);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // Lattice's embedded dock holds only the simulator. A figure render the agent read
+  // outside the project used to open a hidden file pane there, which left the dock
+  // open with nothing in it but the "iOS Simulator" launcher.
+  it("previews out-of-workspace figure renders without opening the embedded dock", async () => {
+    sessionStorage.setItem(
+      "synara.poc.embed-mode",
+      JSON.stringify({
+        workspaceRoot: "/repo/project",
+        theme: "light",
+        surface: "chrome",
+        hostOrigin: window.location.origin,
+        locale: "en",
+      }),
+    );
+    onTestFinished(() => sessionStorage.removeItem("synara.poc.embed-mode"));
+    // Record host hand-offs on the real parent frame; the browser runner reads
+    // window.parent.document, so the parent itself must stay in place.
+    const postedToHost: unknown[] = [];
+    const hostPostMessage = vi
+      .spyOn(window.parent, "postMessage")
+      .mockImplementation((message: unknown) => {
+        postedToHost.push(message);
+      });
+    onTestFinished(() => hostPostMessage.mockRestore());
+    const readActivity = (id: string, detail: string, offsetSeconds: number) => ({
+      id: EventId.makeUnsafe(id),
+      createdAt: isoAt(offsetSeconds),
+      kind: "tool.completed" as const,
+      summary: "Read",
+      tone: "tool" as const,
+      turnId: null,
+      payload: { requestKind: "file-read", title: "Read", detail },
+    });
+    const base = createIssue550Snapshot({ messageCount: 6, activityCount: 0 });
+    // Messages land every two seconds; one read between each pair keeps every row visible.
+    const snapshot: OrchestrationReadModel = {
+      ...base,
+      threads: base.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? {
+              ...thread,
+              activities: [
+                readActivity("read-tmp-render", "/var/folders/x/T/tmp.abc/p-1.png", 1),
+                readActivity("read-tmp-log", "/var/folders/x/T/tmp.abc/main.log", 5),
+                readActivity("read-project-source", "/repo/project/main.tex", 9),
+              ],
+            }
+          : thread,
+      ),
+    };
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, width: 1_400 },
+      snapshot,
+      configureFixture: (next) => {
+        next.serverEnvironment = {
+          environmentId: "environment-embed-dock",
+          label: "Test Mac",
+          platform: { os: "darwin", arch: "arm64" },
+          serverVersion: "0.0.38",
+          capabilities: { repositoryIdentity: false, deviceControl: true },
+        } as ExecutionEnvironmentDescriptor;
+        next.issueLocalPreviewGrants = true;
+      },
+    });
+    try {
+      // Earlier turns fold their reads under "Worked for"; open them so every row is reachable.
+      await expect.poll(() => readRow("main.tex"), { timeout: 5_000 }).not.toBeNull();
+      for (const summary of Array.from(document.querySelectorAll<HTMLElement>("button")).filter(
+        (element) => element.textContent?.trim().startsWith("Worked for"),
+      )) {
+        summary.click();
+      }
+      await expect.poll(() => readRow("p-1.png"), { timeout: 5_000 }).not.toBeNull();
+      readRow("p-1.png")!.click();
+      await expect
+        .element(page.getByRole("dialog", { name: "Expanded image preview" }))
+        .toBeVisible();
+      expect(rightDockState()).toBe("collapsed");
+      expect(useRightDockStore.getState().dockStateByThreadId[THREAD_ID]?.open ?? false).toBe(
+        false,
+      );
+      await userEvent.keyboard("{Escape}");
+      await expect
+        .element(page.getByRole("dialog", { name: "Expanded image preview" }))
+        .not.toBeInTheDocument();
+
+      // Nothing in-app can show an out-of-workspace log, so its row only discloses the
+      // tool details instead of handing the file to an external app.
+      const logRow = readRow("main.log")!;
+      expect(logRow.dataset.toolDetailTrigger).toBe("true");
+      logRow.click();
+      expect(postedToHost).not.toContainEqual(
+        expect.objectContaining({ type: "synara:open-file" }),
+      );
+      expect(wsRequests.some((request) => request._tag === WS_METHODS.shellOpenInEditor)).toBe(
+        false,
+      );
+      expect(rightDockState()).toBe("collapsed");
+
+      // Project files still go to Lattice's editor.
+      readRow("main.tex")!.click();
+      expect(postedToHost).toContainEqual({ type: "synara:open-file", filePath: "main.tex" });
+      expect(rightDockState()).toBe("collapsed");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 
   it.each(["project", "hub discovery pending"] as const)(
     "keeps persistent turn failure visible after reopening and admits one manual continuation (%s)",
@@ -9341,6 +9610,50 @@ describe("ChatView transcript geometry (full app)", () => {
         .toBeVisible();
       await page.getByRole("option", { name: "Plan mode Turn plan mode on", exact: true }).click();
       await expect.element(page.getByRole("button", { name: "Plan", exact: true })).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // Issue leo1oel/lattice#672: Lattice's Agent panel is often shorter than the composer's
+  // full height. The editor's fixed 200px cap let the floating composer grow out of the top
+  // of the chat column until the prompt being typed was clipped away; it now scrolls inside
+  // the editor at whatever height the column leaves it.
+  it("keeps a long draft's composer inside a short chat column", async () => {
+    const mounted = await mountChatView({
+      viewport: { name: "short", width: 640, height: 340 },
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: MessageId.makeUnsafe("msg-composer-room"),
+        targetText: "Composer room",
+      }),
+    });
+    try {
+      await waitForComposerEditor();
+      const sentence =
+        "Rewrite the related-work paragraph so each cited system is compared on the same axis. ";
+      await userEvent.fill(page.getByTestId("composer-editor"), sentence.repeat(14));
+      await waitForLayout();
+      const column = document.querySelector<HTMLElement>("[data-chat-main-content]")!;
+      const form = document.querySelector<HTMLElement>('[data-chat-composer-form="true"]')!;
+      const editor = document.querySelector<HTMLElement>('[data-testid="composer-editor"]')!;
+      await vi.waitFor(() => {
+        expect(form.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+          column.getBoundingClientRect().top,
+        );
+      });
+      expect(editor.clientHeight).toBeLessThan(200);
+      expect(editor.clientHeight).toBeGreaterThanOrEqual(44);
+      expect(editor.scrollHeight).toBeGreaterThan(editor.clientHeight);
+      expect(editor.getBoundingClientRect().bottom).toBeLessThanOrEqual(window.innerHeight);
+
+      // Given its height back, the column lets the editor grow to its own 200px cap again.
+      await mounted.setViewport({ name: "tall", width: 640, height: 1_000 });
+      await vi.waitFor(() => {
+        expect(editor.clientHeight).toBe(200);
+      });
+      expect(form.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+        column.getBoundingClientRect().top,
+      );
     } finally {
       await mounted.cleanup();
     }

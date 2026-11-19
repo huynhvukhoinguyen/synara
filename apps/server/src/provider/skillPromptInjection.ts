@@ -2,9 +2,11 @@
 // Purpose: Inlines portable skill instructions into the outgoing prompt for providers
 //          that cannot natively load the referenced skill files. This is the fallback
 //          that makes Synara catalog skills usable on every provider.
+//          A skill the provider already serves natively under another name (Claude's
+//          skills plugin) gets a short pointer to that name instead of its body.
 // Layer: Server provider helper
-// Exports: shouldInlineSkillForProvider, selectSkillsToInline, loadInlineSkillBlocks,
-//          formatInlineSkillInstructions, buildInlineSkillInstructions
+// Exports: shouldInlineSkillForProvider, selectSkillsToInline, selectNativelyServedSkills,
+//          loadInlineSkillBlocks, formatInlineSkillInstructions, buildInlineSkillInstructions
 
 import * as fs from "node:fs/promises";
 import * as nodePath from "node:path";
@@ -23,6 +25,11 @@ const INLINE_SKILLS_HEADER =
   "instructions are included below, so follow them directly; do not look them up or " +
   "load them again with a skill tool. File paths referenced inside a skill are " +
   'relative to its "dir" attribute.';
+
+const NATIVE_SKILLS_HEADER =
+  "The user invoked the following agent skill(s) for this request. They are in " +
+  'your skill list: load each with the Skill tool under its "invoke" name before ' +
+  'you act. If one is missing from your list, read the SKILL.md at its "path" instead.';
 
 const CROSS_PROVIDER_SKILL_DIR_NAMES = [
   ".synara",
@@ -60,8 +67,11 @@ export function shouldInlineSkillForProvider(
       // only Synara-owned paths need inlining.
       return segments.has(".synara");
     case "claudeAgent":
-      // The active account can place its native skills and plugins under a
-      // custom config directory. Project skills still live in .claude.
+      // Claude Code loads .claude/skills folders itself, and the active account can
+      // place its native skills and plugins under a custom config directory. Bundled
+      // and ~/.synara/skills skills reach it through Synara's skills plugin, which
+      // callers report per session via `nativelyServedSkills`; anything else
+      // (including a skill Settings turned off) is inlined.
       return (
         !segments.has(".claude") &&
         (claudeConfigDir === undefined ||
@@ -105,6 +115,13 @@ function claudeNativelyLoadedSkill(
   );
 }
 
+function nativelyServedSkillName(
+  skill: ProviderSkillReference,
+  nativelyServedSkills: ReadonlyMap<string, string> | undefined,
+): string | undefined {
+  return nativelyServedSkills?.get(nodePath.resolve(skill.path));
+}
+
 /**
  * Skills whose instructions this turn must carry inline. `providerInput` is the final
  * prompt without the inline block; omit it when native slash dispatch is not guaranteed
@@ -115,17 +132,38 @@ export function selectSkillsToInline(input: {
   readonly skills: ReadonlyArray<ProviderSkillReference>;
   readonly providerInput?: string | undefined;
   readonly claudeConfigDir?: string | undefined;
+  /**
+   * SKILL.md path -> the name the provider lists the skill under, for skills
+   * this session loads natively (Claude's skills plugin). Their full text
+   * would otherwise enter the context twice: pasted here, then again when the
+   * model calls its Skill tool on a skill it already has.
+   */
+  readonly nativelyServedSkills?: ReadonlyMap<string, string> | undefined;
 }): ProviderSkillReference[] {
+  const skills = input.skills.filter(
+    (skill) => nativelyServedSkillName(skill, input.nativelyServedSkills) === undefined,
+  );
   if (input.provider !== "claudeAgent") {
-    return input.skills.filter((skill) => shouldInlineSkillForProvider(input.provider, skill.path));
+    return skills.filter((skill) => shouldInlineSkillForProvider(input.provider, skill.path));
   }
   // Mid-sentence, or behind Synara's goal, debug, project or recap text, `/name` reaches
   // Claude as plain words, so even a `.claude` skill must travel inline.
   const native =
     input.providerInput === undefined
       ? undefined
-      : claudeNativelyLoadedSkill(input.providerInput, input.skills, input.claudeConfigDir);
-  return input.skills.filter((skill) => skill !== native);
+      : claudeNativelyLoadedSkill(input.providerInput, skills, input.claudeConfigDir);
+  return skills.filter((skill) => skill !== native);
+}
+
+/** Skills this session serves natively under another name, each with that name. */
+export function selectNativelyServedSkills(input: {
+  readonly skills: ReadonlyArray<ProviderSkillReference>;
+  readonly nativelyServedSkills?: ReadonlyMap<string, string> | undefined;
+}): Array<{ readonly skill: ProviderSkillReference; readonly invoke: string }> {
+  return input.skills.flatMap((skill) => {
+    const invoke = nativelyServedSkillName(skill, input.nativelyServedSkills);
+    return invoke === undefined ? [] : [{ skill, invoke }];
+  });
 }
 
 /** Reads each skill file once per turn; unreadable files are skipped. Keyed by path. */
@@ -157,14 +195,35 @@ export function formatInlineSkillInstructions(input: {
   readonly skills: ReadonlyArray<ProviderSkillReference>;
   readonly blocks: ReadonlyMap<string, string>;
   readonly maxChars: number;
+  /** Skills the session serves natively (`selectNativelyServedSkills`): pointers, not bodies. */
+  readonly nativeSkills?: ReadonlyArray<{
+    readonly skill: ProviderSkillReference;
+    readonly invoke: string;
+  }>;
 }): string {
   if (input.maxChars <= 0) return "";
   let text = "";
+  const nativeSkills = input.nativeSkills ?? [];
+  if (nativeSkills.length > 0) {
+    const pointers = nativeSkills
+      .map(
+        ({ skill, invoke }) =>
+          `<skill name=${JSON.stringify(skill.name)} invoke=${JSON.stringify(
+            invoke,
+          )} path=${JSON.stringify(skill.path)} />`,
+      )
+      .join("\n");
+    const candidate = `${NATIVE_SKILLS_HEADER}\n\n${pointers}`;
+    if (candidate.length <= input.maxChars) {
+      text = candidate;
+    }
+  }
   for (const skill of input.skills) {
     const block = input.blocks.get(skill.path);
     if (block === undefined) continue;
-    const candidate =
-      text.length === 0 ? `${INLINE_SKILLS_HEADER}\n\n${block}` : `${text}\n\n${block}`;
+    const candidate = text.includes(INLINE_SKILLS_HEADER)
+      ? `${text}\n\n${block}`
+      : `${text.length === 0 ? "" : `${text}\n\n`}${INLINE_SKILLS_HEADER}\n\n${block}`;
     if (candidate.length > input.maxChars) {
       // Keep whatever already fits instead of overflowing the provider turn budget.
       break;
@@ -179,14 +238,18 @@ export async function buildInlineSkillInstructions(input: {
   readonly skills: ReadonlyArray<ProviderSkillReference>;
   readonly maxChars: number;
   readonly providerInput?: string | undefined;
+  /** See `selectSkillsToInline`. */
+  readonly nativelyServedSkills?: ReadonlyMap<string, string> | undefined;
 }): Promise<string> {
+  const nativeSkills = selectNativelyServedSkills(input);
   const inlineSkills = selectSkillsToInline(input);
-  if (inlineSkills.length === 0 || input.maxChars <= 0) {
+  if ((nativeSkills.length === 0 && inlineSkills.length === 0) || input.maxChars <= 0) {
     return "";
   }
   return formatInlineSkillInstructions({
     skills: inlineSkills,
     blocks: await loadInlineSkillBlocks(inlineSkills),
     maxChars: input.maxChars,
+    nativeSkills,
   });
 }

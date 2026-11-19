@@ -803,7 +803,7 @@ describe("CheckpointStoreLive history integration", () => {
     expect(diffedPaths(await turnDiff())).toEqual(["conflict-resolved.txt", "src/app.ts"]);
 
     const mergeCommit = git(["rev-parse", "HEAD"]).trim();
-    expect(await undo()).toBe(true);
+    expect(await undo()).toEqual({ conflictedPaths: [] });
     expect(readFileSync(join(cwd, "src", "app.ts"), "utf8")).toBe("app v1\n");
     expect(readFileSync(join(cwd, "conflict-resolved.txt"), "utf8")).toBe("feature side\n");
     expect(readFileSync(join(cwd, ".github", "CI.md"), "utf8")).toBe("ci\n");
@@ -868,7 +868,7 @@ describe("CheckpointStoreLive history integration", () => {
       await capture(toRef);
 
       expect(diffedPaths(await turnDiff())).toEqual(["pkg/own"]);
-      expect(await undo()).toBe(true);
+      expect(await undo()).toEqual({ conflictedPaths: [] });
       expect(readFileSync(join(cwd, "incoming"), "utf8")).toBe("incoming change\n");
       expect(readFileSync(join(cwd, "own"), "utf8")).toBe("initial\n");
     } finally {
@@ -886,7 +886,7 @@ describe("CheckpointStoreLive history integration", () => {
     await capture(toRef);
 
     expect(diffedPaths(await turnDiff())).toEqual(["src/app.ts"]);
-    expect(await undo()).toBe(true);
+    expect(await undo()).toEqual({ conflictedPaths: [] });
     expect(readFileSync(join(cwd, "src/app.ts"), "utf8")).toBe("app v1\n");
     expect(git(["status", "--porcelain", "--", "src/feature.ts"])).toBe("");
   });
@@ -906,7 +906,7 @@ describe("CheckpointStoreLive history integration", () => {
       await capture(toRef);
 
       expect(diffedPaths(await turnDiff())).toEqual(["src/app.ts"]);
-      expect(await undo()).toBe(true);
+      expect(await undo()).toEqual({ conflictedPaths: [] });
       expect(readFileSync(join(cwd, "src/app.ts"), "utf8")).toBe("app v1\n");
     },
   );
@@ -923,7 +923,7 @@ describe("CheckpointStoreLive history integration", () => {
     await capture(toRef);
 
     expect(diffedPaths(await turnDiff())).toEqual(["src/app.ts"]);
-    expect(await undo()).toBe(true);
+    expect(await undo()).toEqual({ conflictedPaths: [] });
     expect(readFileSync(join(cwd, "src/app.ts"), "utf8")).toBe("app v1\n");
     expect(readFileSync(join(cwd, ".github/CI.md"), "utf8")).toBe("ci\n");
   });

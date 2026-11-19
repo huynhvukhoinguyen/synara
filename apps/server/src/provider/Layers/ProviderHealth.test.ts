@@ -21,7 +21,7 @@ import {
 import { TestClock } from "effect/testing";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { vi } from "vitest";
+import { beforeAll, vi } from "vitest";
 
 import { SYNARA_CODEX_HOME_OVERLAY_DIR } from "../../codexHomePaths";
 import { CODEX_CLI_UNPARSEABLE_VERSION_MESSAGE } from "../codexCliVersion.ts";
@@ -44,6 +44,7 @@ import {
   checkOpenCodeProviderStatus,
   checkOmpProviderStatus,
   checkPiProviderStatus,
+  piNotSetUpMessage,
   makeCheckClaudeProviderStatus,
   makeCheckCodexProviderStatus,
   makeCheckCursorProviderStatus,
@@ -66,8 +67,13 @@ import {
   makeProviderUpdateEnv,
 } from "./ProviderHealth";
 import { resolvePackageManagedProviderMaintenance } from "../providerMaintenance";
-import { writePiInstallFixture } from "../testing/piSdkFixture.ts";
-import { providerIsolatedHomePath } from "../providerProcessEnv.ts";
+import {
+  MODEL_PROVIDER_API_KEY_ENV_MAPPINGS,
+  providerIsolatedHomePath,
+} from "../providerProcessEnv.ts";
+import { refreshProviderRuntimeAvailability } from "../providerRuntimes.ts";
+
+beforeAll(() => refreshProviderRuntimeAvailability());
 
 // ── Test helpers ────────────────────────────────────────────────────
 
@@ -236,20 +242,34 @@ function scopedEnv(overrides: Record<string, string | undefined>) {
   );
 }
 
-const allProvidersDisabledSettings = {
-  providers: {
-    codex: { enabled: false },
-    claudeAgent: { enabled: false },
-    cursor: { enabled: false },
-    devin: { enabled: false },
-    antigravity: { enabled: false },
-    grok: { enabled: false },
-    droid: { enabled: false },
-    opencode: { enabled: false },
-    pi: { enabled: false },
-    omp: { enabled: false },
-  },
-} as const;
+const DEFAULT_PROVIDER_INSTANCE_IDS = [
+  "codex",
+  "claudeAgent",
+  "cursor",
+  "devin",
+  "antigravity",
+  "grok",
+  "droid",
+  "opencode",
+  "pi",
+  "omp",
+] as const;
+
+// The fork has no driver-level switch (7eabd821e forces providers.X.enabled on), so a
+// provider is disabled through its default account. A settings patch replaces the
+// whole instance map, so each map lists every account that stays disabled.
+function disabledProviderInstances(
+  ...enabled: ReadonlyArray<(typeof DEFAULT_PROVIDER_INSTANCE_IDS)[number]>
+) {
+  return Object.fromEntries(
+    DEFAULT_PROVIDER_INSTANCE_IDS.filter((id) => !enabled.includes(id)).map((id) => [
+      id,
+      { driver: id, enabled: false },
+    ]),
+  );
+}
+
+const allProvidersDisabledSettings = { providerInstances: disabledProviderInstances() };
 
 const allProvidersDisabledServerSettings = {
   ...DEFAULT_SERVER_SETTINGS,
@@ -621,12 +641,11 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
           },
         });
         const settings = {
-          ...allProvidersDisabledServerSettings,
+          ...DEFAULT_SERVER_SETTINGS,
           providers: {
-            ...allProvidersDisabledServerSettings.providers,
+            ...DEFAULT_SERVER_SETTINGS.providers,
             codex: {
               ...DEFAULT_SERVER_SETTINGS.providers.codex,
-              enabled: true,
               binaryPath:
                 "/Users/test/.nvm/versions/node/v24.13.0/lib/node_modules/@openai/codex/bin/codex",
             },
@@ -726,7 +745,9 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
               .updateProvider({ provider: "codex" })
               .pipe(Effect.forkChild);
             yield* Effect.promise(() => started);
-            yield* serverSettings.updateSettings({ providers: { codex: { enabled: false } } });
+            yield* serverSettings.updateSettings({
+              providerInstances: { codex: { driver: "codex", enabled: false } },
+            });
             return yield* Fiber.join(updateFiber);
           }).pipe(Effect.provide(layer)),
         );
@@ -800,7 +821,6 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
           },
         ],
         { ...DEFAULT_SERVER_SETTINGS, enableProviderUpdateChecks: false },
-        "2026-06-16T12:05:00.000Z",
       );
       const codex = statuses.find((status) => status.provider === "codex");
 
@@ -1025,11 +1045,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
           assert.strictEqual(disabledCodex?.message, "Provider is disabled in Synara settings.");
 
           yield* serverSettings.updateSettings({
-            providers: {
-              codex: {
-                enabled: true,
-              },
-            },
+            providerInstances: disabledProviderInstances("codex"),
           });
 
           const currentStatuses = yield* providerHealth.getStatuses;
@@ -1112,14 +1128,10 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         const layer = ProviderHealthLive.pipe(
           Layer.provideMerge(
             ServerSettingsService.layerTest({
-              ...allProvidersDisabledSettings,
               // This race test only exercises refresh serialization. Keep it hermetic so
               // provider-maintenance advisory lookups cannot consume the test deadline.
               enableProviderUpdateChecks: false,
-              providers: {
-                ...allProvidersDisabledSettings.providers,
-                codex: { enabled: true },
-              },
+              providerInstances: disabledProviderInstances("codex"),
             }),
           ),
           Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
@@ -1131,17 +1143,31 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
           const serverSettings = yield* ServerSettingsService;
           const firstRefresh = yield* providerHealth.refresh.pipe(Effect.forkChild);
           yield* Effect.promise(() => probeGates[0]!.started);
-          yield* serverSettings.updateSettings({ providers: { opencode: { enabled: true } } });
+          yield* serverSettings.updateSettings({
+            providerInstances: disabledProviderInstances("codex", "opencode"),
+          });
           const joinedRefresh = yield* providerHealth.refresh.pipe(Effect.forkChild);
           probeGates[0]!.release();
           yield* Effect.promise(() => probeGates[1]!.started);
-          yield* serverSettings.updateSettings({ providers: { pi: { enabled: true } } });
+          yield* serverSettings.updateSettings({
+            providerInstances: disabledProviderInstances("codex", "opencode", "pi"),
+          });
           probeGates[1]!.release();
           yield* Effect.promise(() => probeGates[2]!.started);
-          yield* serverSettings.updateSettings({ providers: { grok: { enabled: true } } });
+          yield* serverSettings.updateSettings({
+            providerInstances: disabledProviderInstances("codex", "opencode", "pi", "grok"),
+          });
           probeGates[2]!.release();
           yield* Effect.promise(() => probeGates[3]!.started);
-          yield* serverSettings.updateSettings({ providers: { droid: { enabled: true } } });
+          yield* serverSettings.updateSettings({
+            providerInstances: disabledProviderInstances(
+              "codex",
+              "opencode",
+              "pi",
+              "grok",
+              "droid",
+            ),
+          });
           probeGates[3]!.release();
           yield* Fiber.join(joinedRefresh);
           yield* Fiber.join(firstRefresh);
@@ -1151,7 +1177,8 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
           const statuses = yield* providerHealth.refresh;
 
           assert.ok(commands.some((command) => command.includes("opencode")));
-          assert.ok(commands.some((command) => command.includes("pi")));
+          // Pi is probed through its SDK, not a `pi` process (96106d7c9), so its
+          // follow-up refresh shows only in the status asserted below.
           assert.ok(commands.some((command) => command.includes("grok")));
           assert.ok(commands.some((command) => command.includes("droid")));
           assert.notStrictEqual(
@@ -2190,6 +2217,56 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
   // ── checkClaudeProviderStatus tests ──────────────────────────
 
   describe("checkClaudeProviderStatus", () => {
+    // An outdated CLI passes `--version` but rejects the pinned SDK's launch flags,
+    // so every turn would die at startup; its models must not be selectable.
+    it.effect("reports a Claude Code older than the SDK's flags as unavailable", () =>
+      Effect.gen(function* () {
+        const status = yield* checkClaudeProviderStatus;
+        assert.strictEqual(status.status, "error");
+        assert.strictEqual(status.available, false);
+        assert.strictEqual(status.version, "2.0.62");
+        assert.strictEqual(
+          status.message,
+          "Claude Code 2.0.62 is too old. Run `claude update` in Terminal.",
+        );
+      }).pipe(
+        Effect.provide(
+          mockSpawnerLayer((args) => {
+            const joined = args.join(" ");
+            if (joined === "--version") {
+              return { stdout: "2.0.62 (Claude Code)\n", stderr: "", code: 0 };
+            }
+            // The gate needs no auth probe, so no credential (keychain) read.
+            throw new Error(`Unexpected args: ${joined}`);
+          }),
+        ),
+      ),
+    );
+
+    it.effect("returns ready when claude is installed and authenticated", () =>
+      Effect.gen(function* () {
+        const status = yield* checkClaudeProviderStatus;
+        assert.strictEqual(status.provider, "claudeAgent");
+        assert.strictEqual(status.status, "ready");
+        assert.strictEqual(status.available, true);
+        assert.strictEqual(status.authStatus, "authenticated");
+      }).pipe(
+        Effect.provide(
+          mockSpawnerLayer((args) => {
+            const joined = args.join(" ");
+            if (joined === "--version") return { stdout: "2.1.0\n", stderr: "", code: 0 };
+            if (joined === "auth status")
+              return {
+                stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n',
+                stderr: "",
+                code: 0,
+              };
+            throw new Error(`Unexpected args: ${joined}`);
+          }),
+        ),
+      ),
+    );
+
     it.effect("fails closed for Auto when the Claude CLI version is unparseable", () =>
       Effect.gen(function* () {
         const status = yield* checkClaudeProviderStatus;
@@ -2227,7 +2304,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
           mockSpawnerLayer((args, command) => {
             assert.strictEqual(command, "/custom/bin/claude");
             const joined = args.join(" ");
-            if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+            if (joined === "--version") return { stdout: "2.1.0\n", stderr: "", code: 0 };
             if (joined === "auth status")
               return {
                 stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n',
@@ -2265,7 +2342,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
             assert.strictEqual(env?.HOMEPATH, "\\Users\\work\\.claude-work");
             assertProviderInstanceEnv(env, "PROVIDER_TEST_INSTANCE", "claude-work");
             const joined = args.join(" ");
-            if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+            if (joined === "--version") return { stdout: "2.1.0\n", stderr: "", code: 0 };
             if (joined === "auth status")
               return {
                 stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n',
@@ -2341,7 +2418,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
                 assert.strictEqual(env?.CLAUDE_CODE_OAUTH_TOKEN, undefined);
 
                 const joined = args.join(" ");
-                if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+                if (joined === "--version") return { stdout: "2.1.0\n", stderr: "", code: 0 };
                 if (joined === "auth status")
                   return {
                     stdout: '{"loggedIn":true,"authMethod":"claude.ai"}\n',
@@ -2398,7 +2475,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
             assert.strictEqual(env?.ANTHROPIC_AUTH_TOKEN, "work-token");
             const joined = args.join(" ");
             if (joined === "--version") {
-              return { stdout: "1.0.0\n", stderr: "", code: 0 };
+              return { stdout: "2.1.0\n", stderr: "", code: 0 };
             }
             if (joined === "auth status") {
               return {
@@ -2774,7 +2851,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         Effect.provide(
           mockSpawnerLayer((args) => {
             const joined = args.join(" ");
-            if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+            if (joined === "--version") return { stdout: "2.1.0\n", stderr: "", code: 0 };
             if (joined === "auth status")
               return {
                 stdout: '{"loggedIn":false}\n',
@@ -2798,7 +2875,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         Effect.provide(
           mockSpawnerLayer((args) => {
             const joined = args.join(" ");
-            if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+            if (joined === "--version") return { stdout: "2.1.0\n", stderr: "", code: 0 };
             if (joined === "auth status") return { stdout: "Not logged in\n", stderr: "", code: 1 };
             throw new Error(`Unexpected args: ${joined}`);
           }),
@@ -2821,7 +2898,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         Effect.provide(
           mockSpawnerLayer((args) => {
             const joined = args.join(" ");
-            if (joined === "--version") return { stdout: "1.0.0\n", stderr: "", code: 0 };
+            if (joined === "--version") return { stdout: "2.1.0\n", stderr: "", code: 0 };
             if (joined === "auth status")
               return { stdout: "", stderr: "error: unknown command 'auth'", code: 2 };
             throw new Error(`Unexpected args: ${joined}`);
@@ -2921,125 +2998,96 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
   });
 
   describe("checkPiProviderStatus", () => {
-    it.effect("allows a cold Pi CLI to finish its first version probe", () =>
+    it.effect("returns ready for the bundled Pi SDK without probing a CLI", () =>
       Effect.gen(function* () {
-        const root = mkdtempSync(join(OS.tmpdir(), "synara-pi-health-"));
-        const binary = writePiInstallFixture(root, "cold");
-        const started = yield* Deferred.make<void>();
-        const probe = yield* checkPiProviderStatus(undefined, binary).pipe(
-          Effect.ensuring(Effect.sync(() => rmSync(root, { recursive: true, force: true }))),
-          Effect.provide(
-            Layer.succeed(
-              ChildProcessSpawner.ChildProcessSpawner,
-              ChildProcessSpawner.make(() =>
-                Deferred.succeed(started, undefined).pipe(
-                  Effect.andThen(
-                    Effect.succeed(
-                      mockHandle(
-                        { stdout: "pi 0.87.1\n", stderr: "", code: 0 },
-                        {
-                          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)).pipe(
-                            Effect.delay(Duration.seconds(12)),
-                          ),
-                        },
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-          Effect.forkChild,
-        );
-        yield* Deferred.await(started);
-        yield* TestClock.adjust(Duration.seconds(12));
-        const status = yield* Fiber.join(probe);
+        const status = yield* checkPiProviderStatus(undefined, undefined, {
+          ANTHROPIC_API_KEY: "sk-test",
+        });
+        assert.strictEqual(status.provider, "pi");
         assert.strictEqual(status.status, "ready");
-        assert.strictEqual(status.version, "0.87.1");
-      }),
-    );
-
-    it.effect("keeps the first Pi CLI probe bounded when it never finishes", () =>
-      Effect.gen(function* () {
-        // A timeout stays advisory even without Pi credentials: a slow CLI must not flip Pi off.
-        const root = mkdtempSync(join(OS.tmpdir(), "synara-pi-health-"));
-        const binary = writePiInstallFixture(root, "timeout");
-        const started = yield* Deferred.make<void>();
-        const probe = yield* checkPiProviderStatus(undefined, binary).pipe(
-          Effect.ensuring(Effect.sync(() => rmSync(root, { recursive: true, force: true }))),
-          Effect.provide(
-            Layer.succeed(
-              ChildProcessSpawner.ChildProcessSpawner,
-              ChildProcessSpawner.make(() =>
-                Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
-              ),
-            ),
-          ),
-          Effect.forkChild,
-        );
-        yield* Deferred.await(started);
-        yield* TestClock.adjust(Duration.seconds(20));
-        const status = yield* Fiber.join(probe);
-        assert.strictEqual(status.status, "warning");
         assert.strictEqual(status.available, true);
-        assert.match(status.message ?? "", /health check timed out/);
-      }),
+        assert.strictEqual(status.authStatus, "unknown");
+        assert.strictEqual(status.version, undefined);
+        assert.strictEqual(
+          status.message,
+          "Pi SDK is included with Synara. Configure provider credentials inside Pi as needed.",
+        );
+      }).pipe(Effect.provide(failingSpawnerLayer("Pi CLI must not be probed"))),
     );
 
-    it.effect("probes the selected Pi installation with its instance environment", () => {
-      const root = mkdtempSync(join(OS.tmpdir(), "synara-pi-health-"));
-      const binary = writePiInstallFixture(root, "selected");
+    it.effect("reports the configured Pi agent directory", () => {
+      const agentDir = mkdtempSync(join(OS.tmpdir(), "synara-pi-health-"));
+      writeFileSync(join(agentDir, "auth.json"), '{"anthropic":{"type":"api_key","key":"x"}}');
       return Effect.gen(function* () {
         try {
-          const status = yield* checkPiProviderStatus(root, binary, {
-            HOME: root,
-            PROVIDER_TEST_INSTANCE: "pi-work",
-          });
+          const status = yield* checkPiProviderStatus(agentDir);
           assert.strictEqual(status.status, "ready");
-          assert.strictEqual(status.available, true);
-          assert.strictEqual(status.authStatus, "unknown");
-          assert.strictEqual(status.version, "1.4.0");
           assert.strictEqual(
             status.message,
-            `Pi CLI is installed. Synara will use Pi agent dir ${root}.`,
+            `Pi SDK is included with Synara. Using Pi agent dir ${agentDir}.`,
           );
         } finally {
-          rmSync(root, { recursive: true, force: true });
+          rmSync(agentDir, { recursive: true, force: true });
         }
-      }).pipe(
-        Effect.provide(
-          mockSpawnerLayer((args, command, env) => {
-            assert.strictEqual(command, binary);
-            assertProviderInstanceEnv(env, "PROVIDER_TEST_INSTANCE", "pi-work");
-            assert.deepEqual(args, ["--version"]);
-            return { stdout: "pi 1.4.0\n", stderr: "", code: 0 };
-          }),
-        ),
+      });
+    });
+
+    it.effect("reports Pi as not set up when the CLI is missing and no credentials exist", () => {
+      const agentDir = mkdtempSync(join(OS.tmpdir(), "synara-pi-health-"));
+      // An empty credentials file is not evidence of an SDK-only setup.
+      writeFileSync(join(agentDir, "auth.json"), "");
+      return Effect.gen(function* () {
+        try {
+          const status = yield* checkPiProviderStatus(agentDir);
+          assert.strictEqual(status.provider, "pi");
+          assert.strictEqual(status.status, "error");
+          assert.strictEqual(status.available, false);
+          assert.strictEqual(status.authStatus, "unknown");
+          assert.strictEqual(
+            status.message,
+            `Pi is not set up. Install the Pi CLI (\`pi\`) or add Pi credentials to ${agentDir} to use the Pi provider.`,
+          );
+        } finally {
+          rmSync(agentDir, { recursive: true, force: true });
+        }
+      }).pipe(Effect.provide(failingSpawnerLayer("spawn pi ENOENT")));
+    });
+
+    it("points Lattice writers at the Model endpoint pane instead of a Pi CLI", () => {
+      const agentDir = "/tmp/pi-agent";
+      assert.strictEqual(
+        piNotSetUpMessage(agentDir, "lattice"),
+        "Pi is not set up. Connect a model endpoint in Settings → Agent → Model endpoint to use the Pi provider.",
+      );
+      assert.strictEqual(
+        piNotSetUpMessage(agentDir, "synara"),
+        `Pi is not set up. Install the Pi CLI (\`pi\`) or add Pi credentials to ${agentDir} to use the Pi provider.`,
       );
     });
 
-    it.effect("keeps Pi unavailable without a CLI even when credentials exist", () => {
-      const root = mkdtempSync(join(OS.tmpdir(), "synara-pi-health-"));
-      writeFileSync(join(root, "auth.json"), '{"anthropic":{"type":"api_key","key":"test-only"}}');
+    it.effect("does not mistake SDK-created empty or invalid files for Pi setup", () => {
+      const agentDir = mkdtempSync(join(OS.tmpdir(), "synara-pi-health-"));
       return Effect.gen(function* () {
         try {
-          const status = yield* checkPiProviderStatus(root, undefined, {
-            HOME: root,
-            PATH: root,
-          });
-          assert.strictEqual(status.status, "error");
-          assert.strictEqual(status.available, false);
-          assert.include(status.message ?? "", "Pi is not installed");
+          // Pi itself creates auth.json with {} before any login exists.
+          for (const content of ["{}", "not-json", '{"anthropic":{}}']) {
+            writeFileSync(join(agentDir, "auth.json"), content);
+            writeFileSync(join(agentDir, "models.json"), '{"providers":{}}');
+            const status = yield* checkPiProviderStatus(agentDir, undefined, {}, undefined, {
+              homeDir: agentDir,
+              isolationRootDir: agentDir,
+            });
+            assert.strictEqual(status.message?.includes("Pi is not set up"), true);
+            assert.strictEqual(status.available, false);
+          }
         } finally {
-          rmSync(root, { recursive: true, force: true });
+          rmSync(agentDir, { recursive: true, force: true });
         }
-      }).pipe(
-        Effect.provide(
-          mockSpawnerLayer(() => {
-            throw new Error("Unexpected CLI probe");
-          }),
-        ),
-      );
+      }).pipe(Effect.provide(failingSpawnerLayer("spawn pi ENOENT")));
+    });
+
+    it("does not register Pi as a separately updatable CLI", () => {
+      assert.strictEqual(PACKAGE_MANAGED_PROVIDER_UPDATES.pi, undefined);
     });
   });
 

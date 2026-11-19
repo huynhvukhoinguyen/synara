@@ -5,7 +5,8 @@
 
 import type { ProviderKind } from "@synara/contracts";
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { useAppSettings } from "../appSettings";
 import { APP_VERSION } from "../branding";
@@ -65,15 +66,38 @@ import { useSettingsComputerRoute } from "../lib/hosts/settingsComputer";
 import { readWorkspaceFrame } from "../lib/hosts/workspaceFrame";
 import { ResetIcon } from "../lib/icons";
 import { cn } from "../lib/utils";
+import {
+  isSynaraEmbedMode,
+  postEmbedReadyToLattice,
+  postSettingsContentHeightToLattice,
+  postSettingsRevealToLattice,
+  postSettingsSectionReadyToLattice,
+  postSettingsWheelToLattice,
+  readEmbedMode,
+  readLatticeSettingsLayoutMessage,
+  readLatticeSettingsSectionMessage,
+} from "../embedMode";
+import {
+  createEmbeddedSettingsHeightReporter,
+  measureEmbeddedSettingsHeight,
+} from "../embeddedSettingsHeight";
+import { watchEmbeddedSettingsSectionReady } from "../embeddedSettingsSectionReady";
 import { isProviderKind } from "../providerOrdering";
 import {
   normalizeSettingsSection,
   providerAccountsSectionId,
+  resolveSettingsTarget,
   SETTINGS_NAV_ITEMS,
 } from "../settingsNavigation";
 import { SETTINGS_PAGE_BACKGROUND_CLASS_NAME } from "../settingsPanelStyles";
 
 // ── Route screen ───────────────────────────────────────────────────────────
+
+/** A deep link's place: a field's whole label (its name above the control), else the element. */
+function settingsTargetPlace(elementId: string): HTMLElement | null {
+  const element = document.getElementById(elementId);
+  return element?.closest("label") ?? element;
+}
 
 function SettingsRoute() {
   const search = useSearch({ strict: false }) as Record<string, unknown>;
@@ -82,15 +106,32 @@ function SettingsRoute() {
 }
 
 function SettingsRouteView() {
+  // The hook's t re-renders the page when the language changes; the module t does not.
   const { t } = useTranslation();
+  const isEmbed = isSynaraEmbedMode();
   const isController = !readWorkspaceFrame();
   const routeSearch = useSearch({ strict: false }) as Record<string, unknown>;
   const activeSection = normalizeSettingsSection(routeSearch.section);
+  const [embedUiReady, setEmbedUiReady] = useState(!isEmbed);
+  // The latest section request from Lattice; every request is answered, even
+  // one for the section already shown.
+  const [sectionRequest, setSectionRequest] = useState<{ id: number | undefined }>({
+    id: undefined,
+  });
+  const queryClient = useQueryClient();
+  const embeddedSettingsHeightReporterRef = useRef<{
+    flush: () => number | null;
+    schedule: () => void;
+  } | null>(null);
   const settingsTarget = typeof routeSearch.target === "string" ? routeSearch.target : null;
   const settingsProviderTarget =
     typeof routeSearch.provider === "string" && isProviderKind(routeSearch.provider)
       ? routeSearch.provider
       : null;
+  const resolvedSettingsTarget = useMemo(
+    () => resolveSettingsTarget(settingsTarget, settingsProviderTarget),
+    [settingsProviderTarget, settingsTarget],
+  );
   const settingsAccountTarget =
     activeSection === "accounts" && typeof routeSearch.account === "string"
       ? routeSearch.account
@@ -143,18 +184,176 @@ function SettingsRouteView() {
     contentScrollRef.current?.scrollTo({ top: 0 });
   }, [settingsAccountTarget, settingsTarget]);
 
+  useEffect(() => {
+    if (!isEmbed) return;
+    const embedConfig = readEmbedMode();
+    if (!embedConfig?.hostOrigin) return;
+    const receiveHostMessage = (event: MessageEvent) => {
+      const layout = readLatticeSettingsLayoutMessage(event, embedConfig);
+      if (layout) {
+        document.documentElement.toggleAttribute("data-lattice-settings-compact", layout.compact);
+        return;
+      }
+      const message = readLatticeSettingsSectionMessage(event, embedConfig);
+      if (!message || !SETTINGS_NAV_ITEMS.some((item) => item.id === message.section)) return;
+      setSectionRequest({ id: message.request });
+      void navigate({
+        to: "/settings",
+        search: { section: message.section, ...(message.target ? { target: message.target } : {}) },
+        replace: true,
+      });
+    };
+    window.addEventListener("message", receiveHostMessage);
+    return () => window.removeEventListener("message", receiveHostMessage);
+  }, [isEmbed, navigate]);
+
+  useEffect(() => {
+    if (!isEmbed) return;
+    const embedConfig = readEmbedMode();
+    if (!embedConfig?.hostOrigin) return;
+    let cancelled = false;
+    const settleEmbeddedUi = async () => {
+      const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
+      if (fonts && typeof fonts.load === "function") {
+        try {
+          await Promise.all([
+            fonts.load('400 12px "Inter Variable"'),
+            fonts.load('600 18px "Inter Variable"'),
+          ]);
+        } catch {
+          // A missing FontFaceSet or failed font request must not strand Settings.
+        }
+      }
+      if (cancelled) return;
+      document.documentElement.dataset.synaraSettingsReady = "true";
+      setEmbedUiReady(true);
+      postEmbedReadyToLattice(embedConfig);
+    };
+    document.documentElement.dataset.synaraSettingsReady = "false";
+    void settleEmbeddedUi();
+    return () => {
+      cancelled = true;
+      delete document.documentElement.dataset.synaraSettingsReady;
+    };
+  }, [isEmbed]);
+
+  useLayoutEffect(() => {
+    if (!isEmbed || !embedUiReady) return;
+    const embedConfig = readEmbedMode();
+    const content = document.querySelector<HTMLElement>(".synara-settings-content");
+    if (!embedConfig?.hostOrigin || !content) return;
+    const reporter = createEmbeddedSettingsHeightReporter({
+      measure: () => measureEmbeddedSettingsHeight(content),
+      publish: (height) => postSettingsContentHeightToLattice(embedConfig, height, activeSection),
+    });
+    embeddedSettingsHeightReporterRef.current = reporter;
+    reporter.flush();
+
+    const resizeObserver = new ResizeObserver(reporter.schedule);
+    resizeObserver.observe(content);
+    const mutationObserver = new MutationObserver(reporter.schedule);
+    mutationObserver.observe(content, {
+      attributes: true,
+      attributeFilter: ["aria-expanded", "class", "data-state", "hidden", "style"],
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
+    const fontSet = (document as Document & { fonts?: FontFaceSet }).fonts;
+    const reportAfterFonts = () => reporter.schedule();
+    void fontSet?.ready.then(reportAfterFonts);
+    fontSet?.addEventListener?.("loadingdone", reportAfterFonts);
+    content.addEventListener("load", reporter.schedule, true);
+    content.addEventListener("transitionend", reporter.schedule, true);
+    window.addEventListener("resize", reporter.schedule);
+    return () => {
+      if (embeddedSettingsHeightReporterRef.current === reporter) {
+        embeddedSettingsHeightReporterRef.current = null;
+      }
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+      fontSet?.removeEventListener?.("loadingdone", reportAfterFonts);
+      content.removeEventListener("load", reporter.schedule, true);
+      content.removeEventListener("transitionend", reporter.schedule, true);
+      window.removeEventListener("resize", reporter.schedule);
+      reporter.dispose();
+    };
+  }, [activeSection, embedUiReady, isEmbed]);
+
+  useEffect(() => {
+    // Lattice keeps this frame hidden from a section request until the section
+    // answers it: switching sections otherwise showed the previous section, then
+    // empty rows ("No projects are available", a Skills page without its library)
+    // that filled in a moment later.
+    if (!isEmbed || !embedUiReady) return;
+    const embedConfig = readEmbedMode();
+    if (!embedConfig?.hostOrigin) return;
+    const targetElementId = resolvedSettingsTarget.elementId;
+    let revealFrame: number | null = null;
+    const stopWatching = watchEmbeddedSettingsSectionReady({
+      queryClient,
+      onReady: () => {
+        postSettingsSectionReadyToLattice(embedConfig, activeSection, sectionRequest.id);
+        if (!targetElementId) return;
+        // A frame later, once the rows the target opened have laid out. This page has no
+        // scrolling of its own, so Lattice scrolls its viewport to the place.
+        revealFrame = window.requestAnimationFrame(() => {
+          revealFrame = null;
+          const element = settingsTargetPlace(targetElementId);
+          if (!element) return;
+          postSettingsRevealToLattice(embedConfig, {
+            section: activeSection,
+            top: element.getBoundingClientRect().top + window.scrollY,
+            contentHeight: embeddedSettingsHeightReporterRef.current?.flush() ?? null,
+          });
+        });
+      },
+    });
+    return () => {
+      stopWatching();
+      if (revealFrame !== null) window.cancelAnimationFrame(revealFrame);
+    };
+  }, [
+    activeSection,
+    embedUiReady,
+    isEmbed,
+    queryClient,
+    resolvedSettingsTarget.elementId,
+    sectionRequest,
+  ]);
+
+  useEffect(() => {
+    if (!isEmbed) return;
+    const embedConfig = readEmbedMode();
+    if (!embedConfig) return;
+    const forwardWheel = (event: WheelEvent) => {
+      // Include the current height in the wheel message itself. Sending height
+      // and wheel as separate postMessage tasks let the host clamp the first
+      // gesture against the previous section's stale scroll range.
+      const height = embeddedSettingsHeightReporterRef.current?.flush();
+      postSettingsWheelToLattice(
+        embedConfig,
+        event,
+        height === null || height === undefined ? undefined : { height, section: activeSection },
+      );
+      event.preventDefault();
+    };
+    window.addEventListener("wheel", forwardWheel, { capture: true, passive: false });
+    return () => window.removeEventListener("wheel", forwardWheel, { capture: true });
+  }, [activeSection, isEmbed]);
+
   // Deep links and sidebar search targets all resolve to stable DOM ids in the active panel.
   useEffect(() => {
-    if (!settingsTarget) return;
+    const elementId = resolvedSettingsTarget.elementId;
+    if (!elementId) return;
     const frame = window.requestAnimationFrame(() => {
-      document
-        .getElementById(settingsTarget)
-        ?.scrollIntoView({ block: "start", behavior: "smooth" });
+      settingsTargetPlace(elementId)?.scrollIntoView({ block: "start", behavior: "smooth" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activeSection, settingsTarget]);
+  }, [activeSection, resolvedSettingsTarget.elementId]);
 
-  const billingEnabled = ACCOUNT_BILLING_ENABLED;
+  // Lattice has no Synara account, so the Alto plan never shows in its panel.
+  const billingEnabled = ACCOUNT_BILLING_ENABLED && !isEmbed;
 
   const renderRouteOwnedPanel = () => {
     switch (activeSection) {
@@ -195,7 +394,8 @@ function SettingsRouteView() {
             key={settingsTarget ?? ""}
             billingEnabled={billingEnabled && isController}
             target={settingsTarget}
-            overviewExtra={<UsageLimitSettingsSection {...binding} />}
+            // Lattice's Agent page carries usage-limit recovery; its Usage page stays quota only.
+            overviewExtra={isEmbed ? undefined : <UsageLimitSettingsSection {...binding} />}
           />
         );
       default:
@@ -222,22 +422,25 @@ function SettingsRouteView() {
           content (hence absolute, not a layout-occupying header row). The strip stays a
           drag-region so the Windows frameless window can be moved by its top edge; the
           caption buttons themselves are a separate fixed cluster (see root route). */}
-        <div
-          className={cn(
-            "drag-region absolute inset-x-0 top-0 z-10 flex items-center",
-            CHAT_SURFACE_HEADER_PADDING_X_CLASS,
-            CHAT_SURFACE_HEADER_HEIGHT_CLASS,
-            desktopTopBarTrafficLightGutterClassName,
-          )}
-        >
-          <div className="pointer-events-auto">
-            <SidebarHeaderNavigationControls />
+        {!isEmbed ? (
+          <div
+            className={cn(
+              "drag-region absolute inset-x-0 top-0 z-10 flex items-center",
+              CHAT_SURFACE_HEADER_PADDING_X_CLASS,
+              CHAT_SURFACE_HEADER_HEIGHT_CLASS,
+              desktopTopBarTrafficLightGutterClassName,
+            )}
+          >
+            <div className="pointer-events-auto">
+              <SidebarHeaderNavigationControls />
+            </div>
           </div>
-        </div>
-        <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
-          <div ref={contentScrollRef} className="flex-1 overflow-y-auto">
+        ) : null}
+        <div className="synara-settings-shell flex h-full min-h-0 min-w-0 flex-1 flex-col">
+          <div ref={contentScrollRef} className="synara-settings-scroll flex-1 overflow-y-auto">
             <div
               className={cn(
+                "synara-settings-content",
                 "mx-auto w-full px-6 py-8",
                 activeSection === "connectors" || activeSection === "usage"
                   ? "max-w-4xl"
@@ -248,11 +451,11 @@ function SettingsRouteView() {
             >
               <SettingsComputerPicker section={activeSection} />
               {activeSection !== "profile" ? (
-                <div className="mb-8 flex items-start justify-between gap-4">
+                <div className="synara-settings-heading mb-8 flex items-start justify-between gap-4">
                   <div className="min-w-0">
                     <h1 className="flex items-center gap-2 text-xl font-medium tracking-tight text-foreground">
                       {t(activeSectionItem.label)}
-                      {activeSectionItem.badge ? (
+                      {activeSectionItem.badge && !isEmbed ? (
                         <Badge
                           variant="outline"
                           className="rounded-full px-2 font-normal tracking-normal text-muted-foreground"
@@ -265,7 +468,7 @@ function SettingsRouteView() {
                       {t(activeSectionItem.description)}
                     </p>
                   </div>
-                  {activeSection === "shortcuts" ? (
+                  {isEmbed ? null : activeSection === "shortcuts" ? (
                     <KeyboardShortcutsResetButton />
                   ) : isController ? (
                     <Button
@@ -306,8 +509,9 @@ function SettingsRouteView() {
                 />
                 <WorktreesSettingsPanel active={activeSection === "worktrees"} />
                 <ArchivedSettingsPanel active={activeSection === "archived"} />
+                {/* Models are folded into the Agent page; only Lattice's embed shows them, above it. */}
                 <ModelsSettingsPanel
-                  active={activeSection === "models"}
+                  active={isEmbed && activeSection === "providers"}
                   settings={settings}
                   defaults={defaults}
                   updateSettings={updateSettings}
@@ -325,6 +529,7 @@ function SettingsRouteView() {
                 <ProvidersSettingsPanel
                   active={activeSection === "providers"}
                   providerTarget={settingsProviderTarget}
+                  providerTargets={resolvedSettingsTarget.openProviders}
                   settings={settings}
                   defaults={defaults}
                   updateSettings={updateSettings}

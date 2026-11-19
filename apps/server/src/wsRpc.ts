@@ -55,24 +55,25 @@ import {
   PullRequestsUnavailableError,
   type DeviceEvent,
   type ComputerEvent,
+  type GitBlameLineInput,
+  type GitListRecentCommitsInput,
+  type GitReadFileAtRevInput,
   type GitRemoveWorktreeInput,
   type GitRunStackedActionResult,
   type GitHubProjectProvisionProgressEvent,
-  type ModelSelection,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type ProjectDevServerEvent,
-  type ProviderStartOptions,
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
   type ProjectId,
   type OrchestrationThreadDetailSnapshot,
   type OrchestrationThreadPullRequest,
+  type PullRequestSetPinnedInput,
   type OrchestrationThreadStreamItem,
   type ServerConfigStreamEvent,
   type ServerDiagnosticsResult,
   type ServerLifecycleStreamEvent,
-  type ServerSettings,
 } from "@synara/contracts";
 import { clamp } from "effect/Number";
 import {
@@ -150,9 +151,7 @@ import { isGroupContainerKind } from "@synara/shared/projectContainers";
 import { workspaceRootsEqual } from "@synara/shared/threadWorkspace";
 import { WORKSPACE_FILE_WRITE_CONFLICT_CODE } from "@synara/shared/workspaceFileWrite";
 import {
-  mergeProviderStartOptions,
   providerStartOptionsFromInstance,
-  resolveModelSelectionInstanceId,
   resolveProviderInstance,
 } from "@synara/shared/providerInstances";
 import {
@@ -179,6 +178,11 @@ import { GitManager } from "./git/Services/GitManager";
 import { GitHubCliError } from "./git/Errors";
 import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster";
 import { TextGeneration } from "./git/Services/TextGeneration";
+import {
+  resolveTextGenerationRouting,
+  textGenerationPreferences,
+  type TextGenerationRoutingInput,
+} from "./git/textGenerationRouting";
 import {
   beginGitHandoff,
   completeGitHandoff,
@@ -217,6 +221,7 @@ import { sanitizeOrchestrationEventProviderOptions } from "./orchestration/provi
 import { prepareQuitResume } from "./orchestration/quitResume";
 import { makeImportThreadHandler } from "./orchestration/importThreadRoute";
 import { makeProjectImportHandlers } from "./orchestration/projectImportRoute";
+import { makeFolderSessionHandlers } from "./orchestration/folderSessionsRoute";
 import { makeProjectImportRepository } from "./persistence/projectImportRepository";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine";
 import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor";
@@ -225,10 +230,22 @@ import { ProjectionStateIncompleteError } from "./persistence/Errors";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { shouldPublishThreadShellForEvent } from "./orchestration/threadShellEvents";
 import { ProviderDiscoveryService } from "./provider/Services/ProviderDiscoveryService";
-import { discoverSkillsCatalog, synaraSkillsDir } from "./provider/skillsCatalog";
+import {
+  duplicateManagedSkill,
+  discoverSkillsCatalog,
+  importSynaraSkill,
+  readManagedSkill,
+  removeManagedSkill,
+  restoreManagedSkill,
+  saveManagedSkill,
+  synaraSkillsDir,
+} from "./provider/skillsCatalog";
 import { recoverUnregisteredGitHubCheckout } from "./project/githubProjectRegistration";
 import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
+import { clearUnavailableModelsRecordedBefore } from "./provider/providerModelAvailability.ts";
+import { requestProviderRuntimeInstall } from "./provider/providerRuntimes.ts";
+import { readProviderHealthForAuxiliaryModel } from "./provider/runnableModelSelection.ts";
 import { ProviderService } from "./provider/Services/ProviderService";
 import { consumeCodexResetCreditEffect, listProviderUsage } from "./providerUsage";
 import { getProviderUsageSnapshot } from "./providerUsageSnapshot";
@@ -465,47 +482,6 @@ export function toWsRpcError(cause: unknown, fallbackMessage: string) {
 // subscriber inside the tracker — see makeResnapshotEscalationTracker.
 const resnapshotEscalationTracker = makeResnapshotEscalationTracker();
 
-// Legacy/native callers may pin a text-generation model via the model-only
-// `textGenerationModel` field. Downstream routing prefers a model selection
-// over the raw model, so the global settings selection must only be injected
-// when the caller supplied neither — injecting it alongside an explicit model
-// would silently reroute the request to the globally configured model.
-function resolveTextGenerationRouting(
-  settings: ServerSettings,
-  input: {
-    readonly textGenerationModel?: string | undefined;
-    readonly textGenerationModelSelection?: ModelSelection | undefined;
-    readonly providerOptions?: ProviderStartOptions | undefined;
-  },
-): {
-  readonly model: string;
-  readonly modelSelection: ModelSelection | undefined;
-  readonly providerOptions: ProviderStartOptions | undefined;
-} {
-  const explicitModel = input.textGenerationModel?.trim();
-  if (!input.textGenerationModelSelection && explicitModel) {
-    return {
-      model: explicitModel,
-      modelSelection: undefined,
-      providerOptions: input.providerOptions,
-    };
-  }
-  const modelSelection =
-    input.textGenerationModelSelection ?? settings.textGenerationModelSelection;
-  const instance = resolveProviderInstance(settings, {
-    provider: modelSelection.provider,
-    instanceId: resolveModelSelectionInstanceId(modelSelection),
-  });
-  return {
-    model: explicitModel || modelSelection.model,
-    modelSelection,
-    providerOptions: mergeProviderStartOptions(
-      input.providerOptions,
-      instance ? providerStartOptionsFromInstance(instance) : undefined,
-    ),
-  };
-}
-
 const failLiveUiStreamForSnapshotResync = (report: LiveUiStreamDropReport) =>
   Effect.fail(
     new WsRpcError({
@@ -609,6 +585,30 @@ const makeWsRpcHandlersLayer = () =>
       const terminalManager = yield* TerminalManager;
       const textGeneration = yield* TextGeneration;
       const workspaceEntries = yield* WorkspaceEntries;
+      // Git writing and the other auxiliary text calls run on the requested model
+      // only while its provider is usable, else on the first ready provider.
+      const routeTextGeneration = (input: TextGenerationRoutingInput) =>
+        Effect.gen(function* () {
+          const settings = yield* serverSettings.getSettings;
+          const preferences = textGenerationPreferences(settings, input);
+          const health = preferences
+            ? yield* readProviderHealthForAuxiliaryModel({
+                providerHealth,
+                settings,
+                preferences,
+                purpose: "text-generation",
+              })
+            : { statuses: [] };
+          const routing = resolveTextGenerationRouting(
+            settings,
+            health.statuses,
+            input,
+            health.cliFound,
+          );
+          if ("unavailable" in routing)
+            return yield* new WsRpcError({ message: routing.unavailable, retryable: false });
+          return routing;
+        });
       const workspaceFileSystem = yield* WorkspaceFileSystem;
       const threadDiagnostics = yield* ThreadDiagnosticsQuery;
       const remoteSessions = yield* RemoteSessionRegistryService;
@@ -647,8 +647,7 @@ const makeWsRpcHandlersLayer = () =>
       );
       const runGitAction = yield* makeGitActionRunner((input, publish) =>
         Effect.gen(function* () {
-          const settings = yield* serverSettings.getSettings;
-          const routing = resolveTextGenerationRouting(settings, input);
+          const routing = yield* routeTextGeneration(input);
           const result = yield* gitManager.runStackedAction(
             {
               ...input,
@@ -967,12 +966,21 @@ const makeWsRpcHandlersLayer = () =>
         serverConfig: config,
         serverSettings,
       });
+      const projectImportRepository = yield* makeProjectImportRepository;
       const projectImports = makeProjectImportHandlers({
-        repository: yield* makeProjectImportRepository,
+        repository: projectImportRepository,
         orchestrationEngine,
         providerService,
         providerAdapterRegistry,
         serverSettings,
+        homeDir: config.homeDir,
+        stateDir: config.stateDir,
+      });
+      const folderSessions = makeFolderSessionHandlers({
+        repository: projectImportRepository,
+        orchestrationEngine,
+        serverSettings,
+        importThread,
         homeDir: config.homeDir,
         stateDir: config.stateDir,
       });
@@ -1103,10 +1111,12 @@ const makeWsRpcHandlersLayer = () =>
         return Effect.gen(function* () {
           const created = pullRequestFromGitActionResult(result);
           if (created) yield* dispatchLink(created, "created");
-          const status = yield* gitStatusBroadcaster.refreshStatus(cwd);
-          if (!created && result.push.status === "pushed" && status.pr?.state === "open") {
-            yield* dispatchLink(status.pr, "user");
-          }
+          yield* gitStatusBroadcaster.refreshStatus(cwd);
+          if (created || result.push.status !== "pushed") return;
+          // Status carries no pull request in this fork; the refresh above dropped the cached
+          // lookup, so this asks GitHub for the branch's PR after the push.
+          const { pr } = yield* gitStatusBroadcaster.getBranchPullRequest({ cwd });
+          if (pr?.state === "open") yield* dispatchLink(pr, "user");
         }).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("git action pull request link failed", {
@@ -1680,10 +1690,27 @@ const makeWsRpcHandlersLayer = () =>
           ),
         [ORCHESTRATION_WS_METHODS.importProject]: (input) =>
           rpcEffect(projectImports.importProject(input), "Failed to import project"),
+        [ORCHESTRATION_WS_METHODS.listFolderSessions]: (input) =>
+          rpcEffect(
+            folderSessions.listFolderSessions(input),
+            "Failed to find this folder's sessions",
+          ),
+        [ORCHESTRATION_WS_METHODS.openFolderSession]: (input) =>
+          rpcEffect(folderSessions.openFolderSession(input), "Failed to open the session"),
+        [ORCHESTRATION_WS_METHODS.getNativeSessionHandoff]: (input) =>
+          rpcEffect(
+            folderSessions.getNativeSessionHandoff(input),
+            "Failed to prepare the terminal command",
+          ),
         [ORCHESTRATION_WS_METHODS.regenerateThreadTitle]: (input) =>
           rpcEffect(
             providerCommandReactor.regenerateThreadTitle(input),
             "Failed to regenerate thread title",
+          ),
+        [ORCHESTRATION_WS_METHODS.showPanelThread]: (input) =>
+          rpcEffect(
+            providerCommandReactor.showPanelThread(input),
+            "Failed to record the panel's thread",
           ),
         [ORCHESTRATION_WS_METHODS.getSnapshot]: () =>
           rpcEffect(
@@ -2323,7 +2350,9 @@ const makeWsRpcHandlersLayer = () =>
               // stay empty.
               const context = yield* projectionReadModelQuery.getThreadCheckpointContext(
                 input.threadId,
-                { includeFileChangeActivityPayloads: true },
+                {
+                  includeFileChangeActivityPayloads: true,
+                },
               );
               if (Option.isNone(context) || !isGroupContainerKind(context.value.projectKind)) {
                 return { entries: [] };
@@ -2365,11 +2394,16 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(resolveGitHubRepository(git, input.cwd), "Failed to resolve GitHub repository"),
         [WS_METHODS.gitStatus]: (input) =>
           rpcEffect(gitStatusBroadcaster.getStatus(input), "Failed to read git status"),
+        [WS_METHODS.gitBranchPullRequest]: (input) =>
+          rpcEffect(
+            gitStatusBroadcaster.getBranchPullRequest(input),
+            "Failed to read branch pull request",
+          ),
         [WS_METHODS.gitReadWorkingTreeDiff]: (input) =>
           rpcEffect(gitManager.readWorkingTreeDiff(input), "Failed to read working tree diff"),
-        [WS_METHODS.gitBlameLine]: (input) =>
+        [WS_METHODS.gitBlameLine]: (input: GitBlameLineInput) =>
           rpcEffect(gitManager.blameLine(input), "Failed to read git blame"),
-        [WS_METHODS.gitReadFileAtRev]: (input) =>
+        [WS_METHODS.gitReadFileAtRev]: (input: GitReadFileAtRevInput) =>
           rpcEffect(gitManager.readFileAtRev(input), "Failed to read file at revision"),
         [WS_METHODS.gitWorkingTreeDiffStats]: (input) =>
           rpcEffect(
@@ -2379,8 +2413,7 @@ const makeWsRpcHandlersLayer = () =>
         [WS_METHODS.gitSummarizeDiff]: (input) =>
           rpcEffect(
             Effect.gen(function* () {
-              const settings = yield* serverSettings.getSettings;
-              const routing = resolveTextGenerationRouting(settings, input);
+              const routing = yield* routeTextGeneration(input);
               return yield* gitManager.summarizeDiff({
                 ...input,
                 ...(routing.modelSelection
@@ -2390,6 +2423,20 @@ const makeWsRpcHandlersLayer = () =>
               });
             }),
             "Failed to summarize diff",
+          ),
+        [WS_METHODS.gitGenerateCommitMessage]: (input) =>
+          rpcEffect(
+            Effect.gen(function* () {
+              const routing = yield* routeTextGeneration(input);
+              return yield* gitManager.generateCommitMessage({
+                ...input,
+                ...(routing.modelSelection
+                  ? { textGenerationModelSelection: routing.modelSelection }
+                  : {}),
+                ...(routing.providerOptions ? { providerOptions: routing.providerOptions } : {}),
+              });
+            }),
+            "Failed to write a commit message",
           ),
         [WS_METHODS.gitPull]: (input) =>
           rpcEffect(
@@ -2464,7 +2511,7 @@ const makeWsRpcHandlersLayer = () =>
           ),
         [WS_METHODS.pullRequestsComment]: (input) =>
           pullRequestsEffect(pullRequests.comment(input), "Could not post the comment"),
-        [WS_METHODS.pullRequestsSetPinned]: (input) =>
+        [WS_METHODS.pullRequestsSetPinned]: (input: PullRequestSetPinnedInput) =>
           rpcEffect(pullRequests.setPinned(input), "Failed to update pull request pin"),
         [WS_METHODS.pullRequestsGetAutoFix]: (input) =>
           rpcEffect(pullRequestAutoFix.get(input), "Failed to read Auto-fix CI"),
@@ -2472,7 +2519,7 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(pullRequestAutoFix.set(input), "Failed to update Auto-fix CI"),
         [WS_METHODS.gitListBranches]: (input) =>
           rpcEffect(git.listBranches(input), "Failed to list branches"),
-        [WS_METHODS.gitListRecentCommits]: (input) =>
+        [WS_METHODS.gitListRecentCommits]: (input: GitListRecentCommitsInput) =>
           rpcEffect(git.listRecentCommits(input), "Failed to list recent commits"),
         // The created worktree is the result; its status/PR refresh runs in the background.
         [WS_METHODS.gitCreateWorktree]: (input) =>
@@ -2573,6 +2620,16 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(
             refreshGitStatusAfter(input.cwd, git.withMutation(input.cwd, git.initRepo(input))),
             "Failed to initialize repository",
+          ),
+        [WS_METHODS.gitConnectGitHubRemote]: (input) =>
+          rpcEffect(
+            refreshGitStatusAfter(input.cwd, gitManager.connectGitHubRemote(input)),
+            "Failed to connect GitHub repository",
+          ),
+        [WS_METHODS.gitCreateGitHubRepository]: (input) =>
+          rpcEffect(
+            refreshGitStatusAfter(input.cwd, gitManager.createGitHubRepository(input)),
+            "Failed to create GitHub repository",
           ),
         [WS_METHODS.gitStageFiles]: (input) =>
           rpcEffect(
@@ -2702,9 +2759,14 @@ const makeWsRpcHandlersLayer = () =>
             ).pipe(Effect.andThen(serverSettings.updateSettingsView(input))),
             "Failed to update server settings",
           ),
-        [WS_METHODS.serverRefreshProviders]: () =>
+        [WS_METHODS.serverRefreshProviders]: (input) =>
           rpcEffect(
-            providerHealth.refresh.pipe(
+            // The user's own recheck also forgets the models an account refused
+            // (see providerModelAvailability); automatic refreshes keep them.
+            Effect.sync(() => {
+              if (input?.explicit) clearUnavailableModelsRecordedBefore({ before: Date.now() });
+            }).pipe(
+              Effect.andThen(providerHealth.refresh),
               Effect.flatMap(projectProviderStatusesForWsSession),
               Effect.map((providers) => ({ providers })),
             ),
@@ -2713,6 +2775,14 @@ const makeWsRpcHandlersLayer = () =>
         [WS_METHODS.serverUpdateProvider]: (input) =>
           providerHealth.updateProvider(input).pipe(
             Effect.flatMap(({ providers }) => projectProviderStatusesForWsSession(providers)),
+            Effect.map((providers) => ({ providers })),
+          ),
+        // Starts (or joins) the install and answers at once; progress and the
+        // outcome arrive through the provider status stream.
+        [WS_METHODS.serverInstallProviderRuntime]: (input) =>
+          Effect.sync(() => void requestProviderRuntimeInstall(input.provider)).pipe(
+            Effect.andThen(providerHealth.getStatuses),
+            Effect.flatMap(projectProviderStatusesForWsSession),
             Effect.map((providers) => ({ providers })),
           ),
         [WS_METHODS.serverListExternalMcpIntegrations]: () =>
@@ -2907,8 +2977,7 @@ const makeWsRpcHandlersLayer = () =>
         [WS_METHODS.serverGenerateThreadRecap]: (input) =>
           rpcEffect(
             Effect.gen(function* () {
-              const settings = yield* serverSettings.getSettings;
-              const routing = resolveTextGenerationRouting(settings, input);
+              const routing = yield* routeTextGeneration(input);
               return yield* textGeneration.generateThreadRecap({
                 cwd: input.cwd,
                 newMaterial: input.newMaterial,
@@ -2929,8 +2998,7 @@ const makeWsRpcHandlersLayer = () =>
         [WS_METHODS.serverGenerateAutomationIntent]: (input) =>
           rpcEffect(
             Effect.gen(function* () {
-              const settings = yield* serverSettings.getSettings;
-              const routing = resolveTextGenerationRouting(settings, input);
+              const routing = yield* routeTextGeneration(input);
               return yield* textGeneration.generateAutomationIntent({
                 cwd: input.cwd,
                 message: input.message,
@@ -3102,6 +3170,13 @@ const makeWsRpcHandlersLayer = () =>
           ),
         [WS_METHODS.providerListCommands]: (input) =>
           rpcEffect(providerDiscoveryService.listCommands(input), "Failed to list commands"),
+        [WS_METHODS.providerListMcpServers]: (input) =>
+          rpcEffect(providerDiscoveryService.listMcpServers(input), "Failed to list MCP servers"),
+        [WS_METHODS.providerRunMcpServerAction]: (input) =>
+          rpcEffect(
+            providerDiscoveryService.runMcpServerAction(input),
+            "Failed to update the MCP server",
+          ),
         [WS_METHODS.providerListSkills]: (input) =>
           rpcEffect(providerDiscoveryService.listSkills(input), "Failed to list skills"),
         [WS_METHODS.providerListSkillsCatalog]: (input) =>
@@ -3120,6 +3195,36 @@ const makeWsRpcHandlersLayer = () =>
               })),
             ),
             "Failed to list the skills catalog",
+          ),
+        [WS_METHODS.providerImportSkill]: (input) =>
+          rpcEffect(
+            Effect.tryPromise(() => importSynaraSkill(config.baseDir, input)),
+            "Failed to import the skill",
+          ),
+        [WS_METHODS.providerReadManagedSkill]: (input) =>
+          rpcEffect(
+            Effect.tryPromise(() => readManagedSkill(config.baseDir, input)),
+            "Failed to read the skill",
+          ),
+        [WS_METHODS.providerSaveManagedSkill]: (input) =>
+          rpcEffect(
+            Effect.tryPromise(() => saveManagedSkill(config.baseDir, input)),
+            "Failed to save the skill",
+          ),
+        [WS_METHODS.providerDuplicateManagedSkill]: (input) =>
+          rpcEffect(
+            Effect.tryPromise(() => duplicateManagedSkill(config.baseDir, input)),
+            "Failed to create an editable skill copy",
+          ),
+        [WS_METHODS.providerRemoveManagedSkill]: (input) =>
+          rpcEffect(
+            Effect.tryPromise(() => removeManagedSkill(config.baseDir, input)),
+            "Failed to remove the skill",
+          ),
+        [WS_METHODS.providerRestoreManagedSkill]: (input) =>
+          rpcEffect(
+            Effect.tryPromise(() => restoreManagedSkill(config.baseDir, input)),
+            "Failed to restore the skill",
           ),
         [WS_METHODS.providerListPlugins]: (input) =>
           rpcEffect(providerDiscoveryService.listPlugins(input), "Failed to list plugins"),

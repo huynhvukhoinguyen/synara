@@ -47,6 +47,7 @@ import {
   withAgentGatewayTurnCancellation,
 } from "../../agentGateway/sessionLease.ts";
 import { ServerConfig } from "../../config.ts";
+import { toolResultImagesRoot } from "../toolResultImages.ts";
 import { buildProviderChildEnvironment } from "../../providerChildEnvironment.ts";
 import {
   ProviderAdapterRequestError,
@@ -1122,6 +1123,7 @@ export interface AntigravityAdapterDependencies {
 const makeAntigravityAdapter = (dependencies: AntigravityAdapterDependencies = {}) =>
   Effect.gen(function* () {
     const serverConfig = yield* ServerConfig;
+    const toolImagesRoot = toolResultImagesRoot(serverConfig.stateDir);
     const readCompleteLines = dependencies.readCompleteLines ?? readCompleteAntigravityLines;
     const teardownProcessTree = dependencies.teardownProcessTree ?? teardownChildProcessTree;
     const agentGatewayCredentials = Option.getOrUndefined(
@@ -1145,7 +1147,7 @@ const makeAntigravityAdapter = (dependencies: AntigravityAdapterDependencies = {
     );
 
     const offer = (event: ProviderRuntimeEvent) => {
-      eventIngress.offer(compactProviderRuntimeEventForIngress(event));
+      eventIngress.offer(compactProviderRuntimeEventForIngress(event, { toolImagesRoot }));
     };
 
     const base = (
@@ -2471,6 +2473,10 @@ const makeAntigravityAdapter = (dependencies: AntigravityAdapterDependencies = {
           attachments: input.attachments,
           attachmentsDir: serverConfig.attachmentsDir,
           include: "all-files",
+          // Antigravity print mode has no native image argument. Give the
+          // agent the persisted path so its multimodal file tools can inspect
+          // the image instead of silently dropping it from the turn.
+          includeImage: () => true,
         });
         const normalizedPrompt = trim(prompt);
         if (!normalizedPrompt) {

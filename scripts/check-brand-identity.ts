@@ -315,7 +315,12 @@ export function findVisualBrandAssetViolations(
 }
 
 export function readTrackedFiles(cwd = process.cwd()): BrandIdentityBinaryFile[] {
-  const entries = execFileSync("git", ["ls-files", "--stage", "-z"], { cwd, encoding: "utf8" })
+  // The index listing outgrows execFileSync's 1 MiB default buffer (ENOBUFS).
+  const entries = execFileSync("git", ["ls-files", "--stage", "-z"], {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  })
     .split("\0")
     .filter(Boolean);
   // Gitlinks name another repository, not a file owned by this checkout. They may

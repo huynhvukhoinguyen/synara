@@ -1,10 +1,13 @@
 import "../../../index.css";
 
+import { DEFAULT_SERVER_SETTINGS_VIEW } from "@synara/contracts";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { page } from "vitest/browser";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
 import { AppSettingsSchema, type AppSettings } from "~/appSettings";
+import { serverQueryKeys } from "~/lib/serverReactQuery";
 
 import { DefaultNewChatAccountRow } from "./DefaultNewChatAccountRow";
 
@@ -23,12 +26,17 @@ function settingsWith(patch: Partial<AppSettings>): AppSettings {
 
 async function mount(settings: AppSettings) {
   const updateSettings = vi.fn();
+  // The fork reads switched-off agents from server settings (useServerDisabledProviders).
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(serverQueryKeys.settings(), DEFAULT_SERVER_SETTINGS_VIEW);
   await render(
-    <DefaultNewChatAccountRow
-      settings={settings}
-      defaults={defaults}
-      updateSettings={updateSettings}
-    />,
+    <QueryClientProvider client={client}>
+      <DefaultNewChatAccountRow
+        settings={settings}
+        defaults={defaults}
+        updateSettings={updateSettings}
+      />
+    </QueryClientProvider>,
   );
   return updateSettings;
 }

@@ -100,6 +100,7 @@ const insertTurn = (
     readonly state: string;
     readonly at: string;
     readonly completedAt?: string | null;
+    readonly pendingMessageId?: string;
     readonly planId?: string;
     readonly assistantMessageId?: string;
     readonly count?: number;
@@ -109,10 +110,11 @@ const insertTurn = (
   },
 ) =>
   sql`INSERT INTO projection_turns
-    (thread_id, turn_id, source_proposed_plan_thread_id, source_proposed_plan_id,
-     assistant_message_id, state, requested_at, started_at, completed_at,
-     checkpoint_turn_count, checkpoint_ref, checkpoint_status, checkpoint_files_json)
-    VALUES (${row.threadId}, ${row.turnId}, ${row.planId ? row.threadId : null},
+    (thread_id, turn_id, pending_message_id, source_proposed_plan_thread_id,
+     source_proposed_plan_id, assistant_message_id, state, requested_at, started_at,
+     completed_at, checkpoint_turn_count, checkpoint_ref, checkpoint_status, checkpoint_files_json)
+    VALUES (${row.threadId}, ${row.turnId}, ${row.pendingMessageId ?? null},
+      ${row.planId ? row.threadId : null},
       ${row.planId ?? null}, ${row.assistantMessageId ?? null}, ${row.state}, ${row.at}, ${row.at},
       ${row.completedAt === undefined ? row.at : row.completedAt}, ${row.count ?? null},
       ${row.ref ?? null}, ${row.status ?? null}, ${row.files ?? "[]"})`;
@@ -658,6 +660,32 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           ('latest-a', NULL, 'pending', '2026-09-10T00:00:10.000Z', NULL, '[]'),
           ('latest-b', 'turn-old', 'completed', '2026-09-10T00:00:03.000Z', NULL, '[]')
       `;
+        yield* sql`
+          UPDATE projection_turns SET pending_message_id = 'message-z'
+          WHERE thread_id = 'latest-a' AND turn_id = 'turn-z'
+        `;
+        const shells = yield* query.getThreadShellsByIds([
+          asThreadId("latest-b"),
+          asThreadId("latest-a"),
+          asThreadId("latest-a"),
+          asThreadId("missing"),
+        ]);
+        assert.equal(shells.length, 2);
+        assert.equal(
+          shells.find((thread) => thread.id === "latest-a")?.latestTurn?.turnId,
+          "turn-z",
+        );
+        assert.equal(
+          shells.find((thread) => thread.id === "latest-a")?.latestTurn?.pendingMessageId,
+          "message-z",
+        );
+        assert.equal(
+          shells.find((thread) => thread.id === "latest-b")?.latestTurn?.turnId,
+          "turn-old",
+        );
+        assert.isNull(
+          shells.find((thread) => thread.id === "latest-b")?.latestTurn?.pendingMessageId,
+        );
         for (const snapshot of [
           yield* query.getSnapshot(),
           yield* query.getShellSnapshot(),
@@ -919,6 +947,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         turnId: "turn-1",
         state: "completed",
         at: "2026-02-24T00:00:08.000Z",
+        pendingMessageId: "message-0",
         planId: "plan-1",
         assistantMessageId: "message-1",
         count: 1,
@@ -1016,6 +1045,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasActionableProposedPlan: true,
           latestTurn: {
             turnId: asTurnId("turn-1"),
+            pendingMessageId: asMessageId("message-0"),
             state: "completed",
             requestedAt: "2026-02-24T00:00:08.000Z",
             startedAt: "2026-02-24T00:00:08.000Z",
@@ -2338,6 +2368,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           goalPausedAt: null,
           latestTurn: {
             turnId: asTurnId("turn-shell"),
+            pendingMessageId: null,
             state: "completed",
             requestedAt: "2026-03-03T00:00:05.000Z",
             startedAt: "2026-03-03T00:00:05.000Z",

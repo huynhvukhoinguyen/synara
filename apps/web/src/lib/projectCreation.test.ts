@@ -90,9 +90,9 @@ describe("createOrRecoverProjectFromPath", () => {
       makeSnapshot(createdProjectId ? [makeProject(createdProjectId)] : []),
     );
 
+    // Lattice's embedded entry point passes no new-chat default, so discovery picks the model.
     const result = await createOrRecoverProjectFromPath({
       api: makeApi(dispatchCommand),
-      newChatDefault: CODEX_NEW_CHAT_DEFAULT,
       workspaceRoot: WORKSPACE_ROOT,
       loadSnapshot,
     });
@@ -104,6 +104,7 @@ describe("createOrRecoverProjectFromPath", () => {
         title: "synara",
         workspaceRoot: WORKSPACE_ROOT,
         createWorkspaceRootIfMissing: false,
+        defaultModelSelection: null,
       }),
     );
     expect(createdProjectId).not.toBeNull();
@@ -127,9 +128,15 @@ describe("createOrRecoverProjectFromPath", () => {
       api: makeApi(dispatchCommand),
       newChatDefault: CODEX_NEW_CHAT_DEFAULT,
       workspaceRoot: WORKSPACE_ROOT,
+      reuseExistingWorkspaceRoot: true,
       loadSnapshot,
     });
 
+    expect(dispatchCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reuseExistingWorkspaceRoot: true,
+      }),
+    );
     expect(result).toMatchObject({
       projectId: existingProject.id,
       project: existingProject,

@@ -197,6 +197,7 @@ const EFFORT_OPTION_KEY: Readonly<Record<GitTextGenerationProvider, string>> = {
   cursor: "reasoningEffort",
   droid: "reasoningEffort",
   opencode: "variant",
+  pi: "thinkingLevel",
 };
 
 /** Ladder order across providers; a level outside it ranks after every known one. */

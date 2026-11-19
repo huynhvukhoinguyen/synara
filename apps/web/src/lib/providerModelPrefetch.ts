@@ -23,6 +23,7 @@ import {
   type NewChatDefault,
 } from "../appSettings";
 import { isProviderKind } from "../providerOrdering";
+import { isBetaFeatureOn } from "../betaFeatures";
 import type { DraftThreadEnvMode } from "../composerDraftDomain";
 import {
   findUsableProviderStatus,
@@ -65,7 +66,6 @@ export type ProviderModelPrefetchSettings = Pick<
       | "openCodeExperimentalWebSockets"
       | "openCodeServerUrl"
       | "providerInstances"
-      | "disabledProviders"
     >
   >;
 
@@ -331,7 +331,7 @@ export function prefetchProviderModelsForNewThread(
 ): void {
   const cwd = input.cwd ?? null;
   const providers = (input.providers ?? NEW_THREAD_MODEL_PREFETCH_PROVIDERS).filter(
-    (provider) => provider !== "droid",
+    (provider) => provider !== "droid" && isBetaFeatureOn(provider),
   );
 
   for (const provider of providers) {
@@ -480,9 +480,6 @@ export function prefetchModelsForNewThread(
     codexHomePath: input.settings.codexHomePath ?? "",
     selectedCodexAccountId: input.settings.selectedCodexAccountId ?? "default",
     providerInstances: input.settings.providerInstances ?? {},
-    ...(input.settings.disabledProviders
-      ? { disabledProviders: input.settings.disabledProviders }
-      : {}),
   };
   const configuredProviderInstances = getProviderInstanceOptions(instanceSettings);
   const resolveProviderForInstanceId = (instanceId: ProviderInstanceId): ProviderKind | null =>
@@ -549,11 +546,10 @@ export function prefetchModelsForNewThread(
     projectCwd: input.projectCwd,
     serverCwd: input.serverCwd,
   });
-  // useProviderModelCatalog's enabled flag short-circuits even the selected
-  // provider; otherwise it always discovers the selected provider, hidden or
+  // useProviderModelCatalog always discovers the selected provider, hidden or
   // unavailable, so the warm must too or mount shows the loading state again.
-  const selectedProviderWarmable =
-    input.serverSettings?.providers[selectedProvider]?.enabled !== false;
+  // Lattice's provider switches (beta gating) still keep a switched-off one cold.
+  const selectedProviderWarmable = isBetaFeatureOn(selectedProvider);
   const providers = NEW_THREAD_MODEL_PREFETCH_PROVIDERS.filter(
     (provider) => provider === selectedProvider && selectedProviderWarmable,
   );

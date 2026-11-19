@@ -18,6 +18,7 @@ import {
   expensiveReadErrorRefetchInterval,
 } from "./expensiveReadRetry";
 import { createActivityRefreshThrottle } from "./activityRefreshThrottle";
+import { buildLocalImageUrl, normalizeMarkdownImagePath } from "./localImageUrls";
 import { resolveWorkspaceFileReferenceBatched } from "./workspaceFileReferenceBatch";
 
 export const projectQueryKeys = {
@@ -390,6 +391,50 @@ export function projectLocalPreviewGrantQueryOptions(input: {
   });
 }
 
+/** Retries a preview grant only when the server marks the failure transient. */
+export function retryLocalPreviewGrant(failureCount: number, error: unknown): boolean {
+  return (
+    failureCount < 2 &&
+    typeof error === "object" &&
+    error !== null &&
+    "retryable" in error &&
+    error.retryable === true
+  );
+}
+
+/**
+ * A local-image URL authorized by a freshly issued preview grant, for opening or
+ * downloading an image on demand. A backgrounded chat can outlive a grant's TTL
+ * or a server restart, so the grant is renewed at the point of use.
+ */
+export async function fetchGrantedLocalImageUrl(
+  queryClient: QueryClient,
+  input: {
+    src: string;
+    cwd: string | undefined;
+    threadId?: string | null | undefined;
+    download?: boolean;
+  },
+): Promise<string> {
+  const grant = await queryClient.fetchQuery({
+    ...projectLocalPreviewGrantQueryOptions({
+      path: normalizeMarkdownImagePath(input.src),
+      cwd: input.cwd,
+      threadId: input.threadId,
+      // An HTTP denial must not reuse a token invalidated by a server restart.
+      staleTime: 0,
+    }),
+    retry: retryLocalPreviewGrant,
+  });
+  return buildLocalImageUrl({
+    src: input.src,
+    cwd: input.cwd,
+    canonicalPath: grant.canonicalPath,
+    download: input.download ?? false,
+    grant: grant.grant,
+  });
+}
+
 export function projectDiscoverScriptsQueryOptions(input: {
   cwd: string | null;
   enabled?: boolean;
@@ -419,6 +464,7 @@ export function projectSearchEntriesQueryOptions(input: {
   cwd: string | null;
   query: string;
   enabled?: boolean;
+  allowEmptyQuery?: boolean;
   kind?: ProjectEntry["kind"];
   limit?: number;
   staleTime?: number;
@@ -438,7 +484,10 @@ export function projectSearchEntriesQueryOptions(input: {
         ...(input.kind ? { kind: input.kind } : {}),
       });
     },
-    enabled: (input.enabled ?? true) && input.cwd !== null && input.query.length > 0,
+    enabled:
+      (input.enabled ?? true) &&
+      input.cwd !== null &&
+      (input.allowEmptyQuery === true || input.query.length > 0),
     staleTime: input.staleTime ?? DEFAULT_SEARCH_ENTRIES_STALE_TIME,
     placeholderData: (previous) => previous ?? EMPTY_SEARCH_ENTRIES_RESULT,
     ...EXPENSIVE_READ_RETRY_OPTIONS,

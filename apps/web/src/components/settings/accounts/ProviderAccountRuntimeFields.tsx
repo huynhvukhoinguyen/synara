@@ -122,7 +122,7 @@ export function ProviderAccountRuntimeFields(props: {
               variant="ghost"
               onClick={() => updateInstance(instanceId, { config: { [configKey]: "" } })}
               aria-label={t("settings:clearSavedFor", {
-                value0: t(field.label).toLowerCase(),
+                value0: t(field.label),
                 value1: instance.displayName || instanceId,
               })}
             >
@@ -202,12 +202,8 @@ export function ProviderAccountRuntimeFields(props: {
         {isAccountProvider ? (
           <span className="block text-ui-sm text-muted-foreground sm:col-span-2">
             {provider === "codex"
-              ? "Leave both paths blank and Synara keeps this account's sign-in in its " +
-                "own folder. Set a shadow auth home to keep only the sign-in elsewhere " +
-                "while sharing settings and history with the default account, or a " +
-                "CODEX_HOME to keep everything separate."
-              : "Leave blank and Synara keeps this account's sign-in in its own folder. " +
-                "Set a directory to use a Claude config folder you already signed in to."}
+              ? t("lattice:leaveBothPathsBlankAndSynaraKeeps")
+              : t("lattice:leaveBlankAndSynaraKeepsThisAccount")}
           </span>
         ) : null}
         {!isAccountProvider && provider !== "pi" && provider !== "omp" ? (

@@ -43,12 +43,14 @@ export async function createOrRecoverProjectFromPath(input: {
   /** Extra source folders of a multi-folder project; `workspaceRoot` is the primary one. */
   additionalFolders?: ReadonlyArray<string>;
   createIfMissing?: boolean;
+  reuseExistingWorkspaceRoot?: boolean;
   /** Overrides the active-space default; `null` files the project in Void. */
   spaceId?: SpaceId | null;
   /** New-chat default (see resolveNewChatDefault) that seeds the new project's
    * default model selection. pi and omp fall back to codex because they have no
-   * default model slug; the default account is kept only with its own agent. */
-  newChatDefault: NewChatDefault;
+   * default model slug; the default account is kept only with its own agent.
+   * Lattice's embedded workspace omits it so the project starts without one. */
+  newChatDefault?: NewChatDefault;
   loadSnapshot: () => Promise<OrchestrationShellSnapshot | null>;
   maxAttempts?: number;
   delayMs?: number;
@@ -82,10 +84,15 @@ export async function createOrRecoverProjectFromPath(input: {
       workspaceRoot,
       ...(additionalFolders.length > 0 ? { additionalFolders } : {}),
       createWorkspaceRootIfMissing: input.createIfMissing === true,
-      defaultModelSelection: resolveDraftFallbackModelSelection({
-        projectDefault: null,
-        newChatDefault: input.newChatDefault,
-      }),
+      reuseExistingWorkspaceRoot: input.reuseExistingWorkspaceRoot === true,
+      // Embedded project creation omits the new-chat default so runtime discovery
+      // chooses the model. Regular UI entry points pass the persisted default.
+      defaultModelSelection: input.newChatDefault
+        ? resolveDraftFallbackModelSelection({
+            projectDefault: null,
+            newChatDefault: input.newChatDefault,
+          })
+        : null,
       // A project created while a space is active belongs to that space — filing it
       // afterwards would bounce the sidebar back to Void to follow the new project.
       // Callers with an explicit destination (the Create Project dialog) override it.

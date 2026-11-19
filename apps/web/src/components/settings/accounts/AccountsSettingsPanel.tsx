@@ -21,6 +21,7 @@ import { ChevronLeftIcon } from "~/lib/icons";
 import { isProviderListedOnAccounts, isProviderOnAccountsPage } from "~/lib/providerAccountSummary";
 import { providerStatusesByInstance } from "~/lib/providerAvailability";
 import { serverAllProviderUsageQueryOptions } from "~/lib/serverReactQuery";
+import { useServerDisabledProviders } from "~/lib/serverDisabledProviders";
 
 import { Button } from "../../ui/button";
 import { ProviderUsageCard } from "../ProviderUsageSettingsPanel";
@@ -48,6 +49,7 @@ export function AccountsSettingsPanel({
 }: AccountsSettingsPanelProps) {
   const { t } = useTranslation();
   const statuses = useProviderStatusesForLocalConfig();
+  const disabledProviders = useServerDisabledProviders();
   const statusByInstance = useMemo(() => providerStatusesByInstance(statuses), [statuses]);
   // One usage fetch for the whole page; nothing is fetched while the page is closed.
   const usageQuery = useQuery(serverAllProviderUsageQueryOptions({ enabled: active }));
@@ -65,7 +67,7 @@ export function AccountsSettingsPanel({
   if (!active) return null;
 
   const enabledConfigs = PROVIDER_INSTALL_SETTINGS.filter((config) =>
-    isProviderOnAccountsPage(config.provider, settings.disabledProviders),
+    isProviderOnAccountsPage(config.provider, disabledProviders),
   );
 
   if (accountId !== null) {

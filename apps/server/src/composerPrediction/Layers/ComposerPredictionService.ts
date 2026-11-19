@@ -14,6 +14,7 @@ import { TextGenerationError } from "../../git/Errors.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import { COMPOSER_PREDICTION_CONTEXT_BUDGET } from "../../git/textGenerationShared.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { composerPredictionsUnavailableInHost } from "../../remoteFeaturePolicy.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   buildComposerPredictionConversation,
@@ -265,8 +266,12 @@ const make = Effect.fnUntraced(function* (options: { readonly startDelay: Durati
       }),
     );
 
+  // A host that turns suggestions off (Lattice) answers before reading the thread, so
+  // no provider process starts even for a client that ignores the capability.
   const generate: ComposerPredictionServiceShape["generate"] = (input) =>
-    generateShared(input.threadId, input.expectedTurnId);
+    composerPredictionsUnavailableInHost()
+      ? Effect.succeed({ suggestion: null, outcome: "unavailable" as const })
+      : generateShared(input.threadId, input.expectedTurnId);
 
   return { generate } satisfies ComposerPredictionServiceShape;
 });

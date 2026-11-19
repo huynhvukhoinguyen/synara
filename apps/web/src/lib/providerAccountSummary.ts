@@ -58,13 +58,15 @@ export function isProviderListedOnAccounts(
 export function summarizeProviderAccounts(
   settings: AppSettings,
   statuses: ReadonlyArray<ServerProviderStatus>,
+  /** Agents switched off in server settings (the fork keeps no app-level list). */
+  disabledProviders: ReadonlyArray<ProviderKind> = [],
 ): ProviderAccountSummary {
   const statusByInstance = providerStatusesByInstance(statuses);
   const allAccounts = getProviderInstanceOptions(settings);
   // Exactly the accounts the Accounts page lists.
   const accounts = allAccounts.filter(
     (account) =>
-      isProviderOnAccountsPage(account.provider, settings.disabledProviders) &&
+      isProviderOnAccountsPage(account.provider, disabledProviders) &&
       isProviderListedOnAccounts(account.provider, statusByInstance, allAccounts),
   );
   let needingSignIn = 0;

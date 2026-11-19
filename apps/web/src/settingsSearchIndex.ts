@@ -6,9 +6,10 @@
 
 import { isElectron } from "~/env";
 import { rankProviderDiscoveryItems } from "~/lib/providerDiscovery";
+import { isSynaraEmbedMode } from "./embedMode";
 import { providerAccountQualifiedLabel } from "~/lib/providerInstancePresentation";
 import { getNavigatorPlatform, isLinuxPlatform, isWindowsPlatform } from "~/lib/utils";
-import { i18n, t } from "~/i18n";
+import { i18n, t } from "./i18n";
 import {
   GENERATED_SETTINGS_SEARCH_ROWS,
   type GeneratedSettingsSearchRow,
@@ -199,6 +200,8 @@ export const ROW_APPLIES: Readonly<Record<string, (context: SettingsSearchContex
   // Only the desktop app can keep the machine awake for remote access.
   "setting-stay-awake-for-remote-access": () =>
     typeof window !== "undefined" && Boolean(window.desktopBridge?.keepAwake),
+  // The embedded Agent page hides this row: Lattice's server never predicts.
+  "setting-composer-suggestions": () => !isSynaraEmbedMode(),
 };
 
 function generatedRowEntry(row: GeneratedSettingsSearchRow): SettingsSearchEntry {
@@ -318,6 +321,32 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
     title: "settings:archivedThreads",
     keywords: ["settings:viewAndRestoreArchivedThreadsUnarchiveHistory"],
     target: null,
+  },
+
+  // ── Lattice rows the generated index cannot see ───────────────────────────────
+  // Lattice's model rows (Models are folded into Agent providers) and its Claude MCP
+  // toggle, which only the embedded Agent page renders.
+  {
+    id: "models:compile-repair-model",
+    section: "providers",
+    title: "lattice:compileRepairModel",
+    keywords: ["lattice:compileRepairModelKeywords"],
+    target: null,
+  },
+  {
+    id: "models:proofreading-model",
+    section: "providers",
+    title: "lattice:proofreadingModel",
+    keywords: ["lattice:proofreadingModelKeywords"],
+    target: null,
+  },
+  {
+    id: "providers:claude-user-mcp-servers",
+    section: "providers",
+    title: "lattice:loadMyMCPServersInClaude",
+    keywords: ["lattice:loadMyMCPServersInClaudeKeywords"],
+    target: "setting-claude-user-mcp-servers",
+    applies: () => isSynaraEmbedMode(),
   },
   {
     id: "skills:skills",

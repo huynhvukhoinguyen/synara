@@ -4,7 +4,7 @@
 // Layer: Settings UI
 // Depends on: provider instance options, resolveNewChatDefault, shared settings controls.
 
-import { PROVIDER_DISPLAY_NAMES } from "@synara/contracts";
+import { PROVIDER_DISPLAY_NAMES, type ProviderKind } from "@synara/contracts";
 import { useMemo } from "react";
 
 import {
@@ -16,6 +16,7 @@ import {
 import { VISIBLE_PROVIDER_DESCRIPTORS } from "~/betaFeatures";
 import { useTranslation } from "~/i18n";
 import { providerAccountQualifiedLabel } from "~/lib/providerInstancePresentation";
+import { useServerDisabledProviders } from "~/lib/serverDisabledProviders";
 
 import { ProviderOptionLabel } from "../../ProviderIcon";
 import { SelectItem } from "../../ui/select";
@@ -30,10 +31,11 @@ interface NewChatAccountOption {
 // Every enabled account of every enabled, visible agent, in the agent order Settings uses.
 function listNewChatAccountOptions(
   settings: AppSettingsBinding["settings"],
+  disabledProviders: ReadonlyArray<ProviderKind>,
 ): NewChatAccountOption[] {
   const accounts = getProviderInstanceOptions(settings).filter((account) => account.enabled);
   return VISIBLE_PROVIDER_DESCRIPTORS.flatMap(({ kind }) => {
-    if (settings.disabledProviders.includes(kind)) return [];
+    if (disabledProviders.includes(kind)) return [];
     const providerAccounts = accounts.filter((account) => account.provider === kind);
     const providerLabel = PROVIDER_DISPLAY_NAMES[kind];
     return providerAccounts.map((account) => ({
@@ -53,7 +55,11 @@ export function DefaultNewChatAccountRow({
   updateSettings,
 }: AppSettingsBinding) {
   const { t } = useTranslation();
-  const options = useMemo(() => listNewChatAccountOptions(settings), [settings]);
+  const disabledProviders = useServerDisabledProviders();
+  const options = useMemo(
+    () => listNewChatAccountOptions(settings, disabledProviders),
+    [disabledProviders, settings],
+  );
   // resolveNewChatDefault drops a stored account that is gone, off, or on another agent.
   // A stored account that no longer resolves leaves the selection empty.
   const resolved = resolveNewChatDefault(settings);

@@ -79,16 +79,18 @@ export const ProviderHandoffDivider = memo(function ProviderHandoffDivider({
           aria-expanded={open}
           onClick={() => setOpen((value) => !value)}
           className={cn(
-            "inline-flex min-w-0 shrink items-center gap-2 rounded-sm text-ui-sm transition-opacity duration-150 hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]/60",
+            // Wraps in a narrow panel: one line cannot hold both models and their
+            // efforts, and shrinking them in place hid both model names.
+            "inline-flex min-w-0 shrink flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-sm text-ui-sm transition-opacity duration-150 hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]/60",
             failed ? "text-destructive" : "text-muted-foreground",
           )}
         >
-          {failed ? (
-            <CircleAlertIcon className="size-3.5 shrink-0" aria-hidden />
-          ) : (
-            <HandoffIcon className="size-3.5 shrink-0" aria-hidden />
-          )}
-          <span className="shrink-0">
+          <span className="inline-flex shrink-0 items-center gap-2">
+            {failed ? (
+              <CircleAlertIcon className="size-3.5 shrink-0" aria-hidden />
+            ) : (
+              <HandoffIcon className="size-3.5 shrink-0" aria-hidden />
+            )}
             {failed ? t("chat:handoffFailed") : t("chat:contextHandoff")}
           </span>
           <HandoffEndpoint
@@ -96,13 +98,15 @@ export const ProviderHandoffDivider = memo(function ProviderHandoffDivider({
             accountLabel={accountLabelFor(source)}
             fastModeNotice={info.sourceFastModeNotice}
           />
-          <ArrowRightIcon className="size-3 shrink-0 opacity-70" aria-hidden />
-          <HandoffEndpoint
-            selection={target}
-            accountLabel={accountLabelFor(target)}
-            fastModeNotice={info.targetFastModeNotice}
-            className={failed ? "line-through" : "text-foreground/84"}
-          />
+          <span className="inline-flex min-w-0 items-center gap-2">
+            <ArrowRightIcon className="size-3 shrink-0 opacity-70" aria-hidden />
+            <HandoffEndpoint
+              selection={target}
+              accountLabel={accountLabelFor(target)}
+              fastModeNotice={info.targetFastModeNotice}
+              className={failed ? "line-through" : "text-foreground/84"}
+            />
+          </span>
         </button>
         <TranscriptDividerRule />
       </div>

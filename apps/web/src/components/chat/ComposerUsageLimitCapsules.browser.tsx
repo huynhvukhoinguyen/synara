@@ -6,6 +6,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
+import { setLanguagePreference } from "~/i18n";
 import type { RateLimitStatus } from "~/lib/rateLimitStatus";
 import { serverQueryKeys } from "~/lib/serverReactQuery";
 import { makeUsageLimitRecovery } from "../../storeTestFixtures";
@@ -153,7 +154,7 @@ describe("usage-limit card", () => {
       },
       { ...DEFAULT_SERVER_SETTINGS_VIEW, autoResumeAfterUsageLimits: true },
     );
-    await expect.element(card()).toHaveTextContent("Synara will continue this task");
+    await expect.element(card()).toHaveTextContent("Lattice will continue this task");
     const thisTask = switchNamed("Resume this task at reset");
     expect(thisTask.element().getAttribute("aria-checked")).toBe("true");
     expect(onCancelRecovery).not.toHaveBeenCalled();
@@ -193,7 +194,8 @@ describe("usage-limit card", () => {
     }));
     await mount({ rateLimitStatus: limited() });
     const thisTask = switchNamed("Resume this task at reset");
-    expect(thisTask.element().getAttribute("aria-disabled")).toBe("true");
+    // The fork's Switch renders a native button, so it is disabled rather than aria-disabled.
+    await expect.element(thisTask).toBeDisabled();
     const always = switchNamed("Always resume after limits");
     expect(always.element().getAttribute("aria-checked")).toBe("false");
     await always.click();
@@ -245,6 +247,42 @@ describe("usage-limit card", () => {
     await mount({ rateLimitStatus: status, showWarning: false });
     await expect.element(page.getByTestId("composer-usage-limit-warning")).not.toBeInTheDocument();
   });
+
+  // Lattice's embedded Agent panel is the viewport, so the tip must keep its localized
+  // reset time and a reachable dismiss button at a narrow panel width (carried over from
+  // the fork's RateLimitBanner tests).
+  for (const [locale, text, dismissLabel] of [
+    ["en", "92% used · Resets in 1d 23h", "Dismiss rate limit status"],
+    ["zh-CN", "已用 92% · 1 天 23 小时后重置", "关闭速率限制状态"],
+  ] as const) {
+    it(`keeps the localized reset and the dismiss button in a narrow panel (${locale})`, async () => {
+      setLanguagePreference(locale);
+      try {
+        await page.viewport(320, 400);
+        const onDismissWarning = vi.fn();
+        await mount({
+          onDismissWarning,
+          rateLimitStatus: {
+            status: "allowed_warning",
+            utilization: 0.92,
+            resetsAt: new Date(Date.now() + 2822 * 60_000).toISOString(),
+          },
+        });
+        const warning = page.getByTestId("composer-usage-limit-warning");
+        await expect.element(warning).toHaveTextContent(text);
+        const dismiss = page.getByRole("button", { name: dismissLabel });
+        const tip = warning.element().getBoundingClientRect();
+        const close = dismiss.element().getBoundingClientRect();
+        expect(close.right).toBeLessThanOrEqual(320);
+        expect(close.top).toBeGreaterThanOrEqual(tip.top);
+        expect(close.bottom).toBeLessThanOrEqual(tip.bottom);
+        await dismiss.click();
+        expect(onDismissWarning).toHaveBeenCalledOnce();
+      } finally {
+        setLanguagePreference("en");
+      }
+    });
+  }
 });
 
 it("keeps queued follow-ups editable while disabling Resume and Steer during a host wait", async () => {

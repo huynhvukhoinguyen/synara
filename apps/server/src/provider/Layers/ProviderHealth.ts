@@ -52,6 +52,11 @@ import {
 } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { makeEffectProcessCommand } from "../../platform/effectProcessRuntime.ts";
+import { isServerBetaFeatureEnabled } from "../../betaFeatureGate.ts";
+import {
+  ACTIVE_AGENT_HOST_PROFILE,
+  type AgentHostProfileId,
+} from "../../agentGateway/hostProfile.ts";
 
 import {
   CODEX_CLI_UNPARSEABLE_VERSION_MESSAGE,
@@ -63,6 +68,7 @@ import {
 } from "../codexCliVersion";
 import { buildClaudeInstanceProcessEnv } from "../claudeEnvironment";
 import { ServerConfig } from "../../config";
+import { addCliInstallDirectoriesToPath } from "../../os-jank.ts";
 import {
   buildProviderChildEnvironment,
   type ProviderChildKind,
@@ -123,15 +129,57 @@ import {
   withOpenCodeMaintenanceVersion,
   type PackageManagedProviderMaintenanceDefinition,
 } from "../providerMaintenance";
-import { isClaudeAutoModeCliVersionSupported } from "../claudeCliVersion.ts";
+import {
+  claudeCliTooOldMessage,
+  isClaudeAutoModeCliVersionSupported,
+  isClaudeCliTooOldForSdk,
+} from "../claudeCliVersion.ts";
 import { collectUint8StreamText } from "../../stream/collectUint8StreamText";
 import {
   buildCodexProcessEnv,
   readEffectiveCodexAuthCredentialsStoreMode,
 } from "../../codexProcessEnv.ts";
 import { readGrokCachedLogin } from "../../providerUsage/providers/grok";
-import { buildProviderProcessEnv, type ProviderProcessEnvDriver } from "../providerProcessEnv.ts";
-import { PiNotInstalledError, resolvePiInstallation } from "../piSdkImports.ts";
+import {
+  buildProviderProcessEnv,
+  MODEL_PROVIDER_API_KEY_ENV_MAPPINGS,
+  type ProviderProcessEnvDriver,
+} from "../providerProcessEnv.ts";
+import { defaultPiSdkAgentDir, makePiStoragePaths } from "../piStoragePaths.ts";
+import {
+  configureProviderRuntimes,
+  providerRuntimeAvailability,
+  providerRuntimeIdForDriver,
+  providerRuntimeInstallState,
+  type ProviderRuntimeId,
+  subscribeProviderRuntimeChanges,
+} from "../providerRuntimes.ts";
+import {
+  clearUnavailableModelsRecordedBefore,
+  subscribeUnavailableModelChanges,
+  unavailableModelsFor,
+} from "../providerModelAvailability.ts";
+
+// A slim host installs Pi and OpenCode on demand; until then the provider offers the
+// install instead of probing a runtime it does not have.
+function providerRuntimeMissingStatus(
+  provider: ProviderRuntimeId,
+  checkedAt: string,
+): ServerProviderStatus | null {
+  if (providerRuntimeAvailability(provider) !== "missing") return null;
+  const name = provider === "pi" ? "Pi" : "OpenCode";
+  return {
+    provider,
+    instanceId: provider,
+    driver: provider,
+    status: "error",
+    available: false,
+    authStatus: "unknown",
+    checkedAt,
+    message: `${name} is not installed. Install ${name} in provider settings to use it.`,
+    runtimeInstall: { status: "missing" },
+  } satisfies ServerProviderStatus;
+}
 
 export { parseClaudeAuthStatusFromOutput } from "../claudeAuthStatus";
 export type { CommandResult } from "../providerCliOutput";
@@ -139,7 +187,6 @@ export type { CommandResult } from "../providerCliOutput";
 const DEFAULT_TIMEOUT_MS = 4_000;
 const CLAUDE_HEALTH_TIMEOUT_MS = 20_000;
 const OPENCODE_HEALTH_TIMEOUT_MS = 20_000;
-const PI_HEALTH_TIMEOUT_MS = 20_000;
 const CODEX_AUTH_STATUS_ARGS = ["-c", "mcp_servers={}", "login", "status"] as const;
 const CODEX_PROVIDER = "codex" as const;
 const CLAUDE_AGENT_PROVIDER = "claudeAgent" as const;
@@ -350,18 +397,6 @@ export const PACKAGE_MANAGED_PROVIDER_UPDATES: Partial<
       strategy: "always",
       excludedInstallSources: ["homebrew"],
       isCommandPath: isOpenCodeNativeCommandPath,
-    },
-  },
-  pi: {
-    provider: PI_PROVIDER,
-    binaryName: "pi",
-    npmPackageName: "@earendil-works/pi-coding-agent",
-    homebrew: null,
-    nativeUpdate: {
-      executable: "pi",
-      args: () => ["update"],
-      lockKey: "pi-native",
-      strategy: "always",
     },
   },
   omp: {
@@ -1480,6 +1515,22 @@ export const makeCheckClaudeProviderStatus = (
     }
     const version = versionProbe.result;
     const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
+    // A Claude Code older than the pinned SDK's flags dies on every launch, so
+    // its models must not be selectable. The version is already in hand: this
+    // adds no process and skips the auth probe (and its keychain read).
+    if (parsedVersion !== null && isClaudeCliTooOldForSdk(parsedVersion)) {
+      return {
+        provider: CLAUDE_AGENT_PROVIDER,
+        instanceId: CLAUDE_AGENT_PROVIDER,
+        driver: CLAUDE_AGENT_PROVIDER,
+        status: "error" as const,
+        available: false,
+        authStatus: "unknown" as const,
+        checkedAt,
+        version: parsedVersion,
+        message: claudeCliTooOldMessage(parsedVersion),
+      };
+    }
     const supportsAutoRuntimeMode = isClaudeAutoModeCliVersionSupported(parsedVersion);
 
     // Probe 2: `claude auth status` — is the user authenticated? The command can
@@ -1868,6 +1919,8 @@ export const makeCheckOpenCodeProviderStatus = (
 ): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
+    const runtimeMissing = providerRuntimeMissingStatus(OPENCODE_PROVIDER, checkedAt);
+    if (runtimeMissing) return runtimeMissing;
     const configuredServerUrl = nonEmptyTrimmed(connection?.serverUrl);
     if (configuredServerUrl) {
       return openCodeExternalServerStatus({
@@ -1962,94 +2015,192 @@ export const checkOpenCodeProviderStatus = makeCheckOpenCodeProviderStatus();
 
 // ── Pi health check ─────────────────────────────────────────────
 
+/**
+ * Lattice runs Pi only through the bundled SDK and writes its endpoint config
+ * from its own Settings pane, so a Lattice writer has no Pi CLI to install and
+ * no agent dir to edit by hand. Upstream hosts keep the CLI/credentials hint.
+ */
+export function piNotSetUpMessage(
+  agentDir: string,
+  hostProfileId: AgentHostProfileId = ACTIVE_AGENT_HOST_PROFILE.id,
+): string {
+  return hostProfileId === "lattice"
+    ? "Pi is not set up. Connect a model endpoint in Settings → Agent → Model endpoint to use the Pi provider."
+    : `Pi is not set up. Install the Pi CLI (\`pi\`) or add Pi credentials to ${agentDir} to use the Pi provider.`;
+}
+
+const PI_SDK_SETUP_FILE_NAMES = ["auth.json", "models.json"] as const;
+// Additional credential names supported by the installed Pi SDK; these are not
+// all plain API-key overrides, so do not add them to the runtime override mapping.
+const PI_SDK_AUTH_ENV_KEYS = [
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANT_LING_API_KEY",
+  "QWEN_TOKEN_PLAN_API_KEY",
+  "QWEN_TOKEN_PLAN_CN_API_KEY",
+  "NVIDIA_API_KEY",
+  "RADIUS_API_KEY",
+  "TOGETHER_API_KEY",
+  "BASETEN_API_KEY",
+  "META_API_KEY",
+  "ZAI_CODING_CN_API_KEY",
+] as const;
+// Pi also supports cloud credentials that are not provider API keys.
+const PI_SDK_CLOUD_AUTH_ENV_KEYS = [
+  "AWS_PROFILE",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+  "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+  "AWS_WEB_IDENTITY_TOKEN_FILE",
+] as const;
+
+function hasPiSdkSetup(
+  content: string,
+  fileName: (typeof PI_SDK_SETUP_FILE_NAMES)[number],
+): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const data = parsed as Record<string, unknown>;
+  const entries = fileName === "auth.json" ? data : data.providers;
+  if (!entries || typeof entries !== "object" || Array.isArray(entries)) return false;
+  return Object.values(entries).some((entry: unknown) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+    const value = entry as Record<string, unknown>;
+    if (fileName === "models.json") {
+      return (
+        (typeof value.apiKey === "string" && value.apiKey.trim().length > 0) ||
+        typeof value.baseUrl === "string" ||
+        (Array.isArray(value.models) && value.models.length > 0)
+      );
+    }
+    return value.type === "oauth"
+      ? (typeof value.refresh === "string" && value.refresh.trim().length > 0) ||
+          (typeof value.access === "string" && value.access.trim().length > 0)
+      : value.type === "api_key" &&
+          ((typeof value.key === "string" && value.key.trim().length > 0) ||
+            (value.env !== null &&
+              typeof value.env === "object" &&
+              Object.keys(value.env).length > 0));
+  });
+}
+
+/**
+ * Looks for evidence that Pi is set up for the bundled SDK even though the Pi
+ * CLI is unavailable: a provider API key set on this Pi instance, or a
+ * configured credentials/models file in the agent dir Pi sessions will use.
+ * Files are inspected without executing configuration commands or importing the SDK.
+ */
+const inspectPiSdkSetup = (input: {
+  readonly agentDir: string | undefined;
+  readonly environment: Readonly<Record<string, string>> | undefined;
+  readonly runtimeEnvironment: Readonly<NodeJS.ProcessEnv>;
+  readonly instanceId: string | undefined;
+  readonly paths: { readonly homeDir: string; readonly isolationRootDir: string } | undefined;
+}): Effect.Effect<
+  { readonly found: boolean; readonly agentDir: string },
+  never,
+  FileSystem.FileSystem
+> =>
+  Effect.gen(function* () {
+    const environment = input.environment;
+    const { agentDir } = makePiStoragePaths({
+      agentDir: input.agentDir,
+      environment,
+      instanceId: input.instanceId,
+      stateDir: input.paths?.isolationRootDir,
+      homeDir: input.paths?.homeDir ?? OS.homedir(),
+      sdkAgentDir: defaultPiSdkAgentDir(),
+    });
+    const runtimeEnv = input.runtimeEnvironment;
+    const defaultAccount =
+      environment === undefined && (!input.instanceId || input.instanceId === PI_PROVIDER);
+    if (
+      MODEL_PROVIDER_API_KEY_ENV_MAPPINGS.some(
+        ({ provider, envKeys }) =>
+          (defaultAccount || provider !== "azure-openai-responses") &&
+          envKeys.some((key) => nonEmptyTrimmed(runtimeEnv[key]) !== undefined),
+      ) ||
+      PI_SDK_AUTH_ENV_KEYS.some((key) => nonEmptyTrimmed(runtimeEnv[key]) !== undefined) ||
+      (defaultAccount &&
+        (PI_SDK_CLOUD_AUTH_ENV_KEYS.some((key) => nonEmptyTrimmed(runtimeEnv[key]) !== undefined) ||
+          (nonEmptyTrimmed(runtimeEnv.AWS_ACCESS_KEY_ID) !== undefined &&
+            nonEmptyTrimmed(runtimeEnv.AWS_SECRET_ACCESS_KEY) !== undefined)))
+    ) {
+      return { found: true, agentDir };
+    }
+    const fileSystem = yield* FileSystem.FileSystem;
+    if (
+      defaultAccount &&
+      (nonEmptyTrimmed(runtimeEnv.GOOGLE_CLOUD_PROJECT) ??
+        nonEmptyTrimmed(runtimeEnv.GCLOUD_PROJECT)) &&
+      nonEmptyTrimmed(runtimeEnv.GOOGLE_CLOUD_LOCATION)
+    ) {
+      const adcPath =
+        nonEmptyTrimmed(runtimeEnv.GOOGLE_APPLICATION_CREDENTIALS) ??
+        nodePath.join(
+          input.paths?.homeDir ?? OS.homedir(),
+          ".config/gcloud/application_default_credentials.json",
+        );
+      if (adcPath && (yield* fileSystem.exists(adcPath).pipe(Effect.orElseSucceed(() => false)))) {
+        return { found: true, agentDir };
+      }
+    }
+    for (const fileName of PI_SDK_SETUP_FILE_NAMES) {
+      const info = yield* fileSystem
+        .stat(nodePath.join(agentDir, fileName))
+        .pipe(Effect.orElseSucceed(() => undefined));
+      if (info?.type === "File" && Number(info.size) > 0) {
+        // The SDK creates auth.json as {}, even before any account is configured.
+        const content = yield* fileSystem
+          .readFileString(nodePath.join(agentDir, fileName))
+          .pipe(Effect.orElseSucceed(() => ""));
+        if (hasPiSdkSetup(content, fileName)) return { found: true, agentDir };
+      }
+    }
+    return { found: false, agentDir };
+  });
+
 export const checkPiProviderStatus = (
   agentDir?: string,
-  binaryPath?: string,
+  _binaryPath?: string,
   environment?: Readonly<Record<string, string>>,
   instanceId?: string,
   paths?: { readonly homeDir: string; readonly isolationRootDir: string },
-): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
+): Effect.Effect<ServerProviderStatus, never, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
+    const runtimeMissing = providerRuntimeMissingStatus(PI_PROVIDER, checkedAt);
+    if (runtimeMissing) return runtimeMissing;
     const probeEnvResult = tryMakeProviderProbeEnv(PI_PROVIDER, environment, instanceId, paths);
     if (!probeEnvResult.ok) {
       return providerHomePreparationFailure(PI_PROVIDER, checkedAt, probeEnvResult.cause);
     }
-    const probeEnv = probeEnvResult.env;
-    const installation = yield* Effect.result(
-      Effect.tryPromise({
-        try: () => resolvePiInstallation({ binaryPath, env: probeEnv }),
-        catch: (cause) => cause,
-      }),
-    );
-    if (Result.isFailure(installation)) {
+    // The bundled SDK runs Pi and its CLI is never probed, so only SDK setup
+    // evidence (instance API keys or a configured credentials/models file)
+    // shows that Pi can start a session.
+    const sdkSetup = yield* inspectPiSdkSetup({
+      agentDir,
+      environment,
+      runtimeEnvironment: probeEnvResult.env,
+      instanceId,
+      paths,
+    });
+    if (!sdkSetup.found) {
       return {
         provider: PI_PROVIDER,
         instanceId: PI_PROVIDER,
         driver: PI_PROVIDER,
         status: "error" as const,
         available: false,
-        ...(installation.failure instanceof PiNotInstalledError ? { installed: false } : {}),
         authStatus: "unknown" as const,
         checkedAt,
-        message:
-          installation.failure instanceof Error
-            ? installation.failure.message
-            : "Could not locate the selected Pi CLI installation.",
+        message: piNotSetUpMessage(sdkSetup.agentDir),
       } satisfies ServerProviderStatus;
     }
-
-    const versionProbe = yield* probeProviderCliVersion(
-      runPiCommand(["--version"], installation.success.binaryPath, probeEnv),
-      PI_HEALTH_TIMEOUT_MS,
-    );
-    if (versionProbe.outcome === "missing" || versionProbe.outcome === "failure") {
-      const error = versionProbe.cause;
-      return {
-        provider: PI_PROVIDER,
-        instanceId: PI_PROVIDER,
-        driver: PI_PROVIDER,
-        status: "warning" as const,
-        available: true,
-        authStatus: "unknown" as const,
-        checkedAt,
-        message: `Pi is installed, but the CLI health check failed: ${error instanceof Error ? error.message : String(error)}.`,
-      } satisfies ServerProviderStatus;
-    }
-
-    if (versionProbe.outcome === "timeout") {
-      return {
-        provider: PI_PROVIDER,
-        instanceId: PI_PROVIDER,
-        driver: PI_PROVIDER,
-        status: "warning" as const,
-        available: true,
-        authStatus: "unknown" as const,
-        checkedAt,
-        message:
-          "Pi is installed, but the CLI health check timed out before Synara could verify the installed version.",
-      } satisfies ServerProviderStatus;
-    }
-
-    if (versionProbe.outcome === "nonzero") {
-      const version = versionProbe.result;
-      const detail = detailFromResult(version);
-      return {
-        provider: PI_PROVIDER,
-        instanceId: PI_PROVIDER,
-        driver: PI_PROVIDER,
-        status: "warning" as const,
-        available: true,
-        authStatus: "unknown" as const,
-        checkedAt,
-        message: detail
-          ? `Pi is installed, but the CLI health check failed. ${detail}`
-          : "Pi is installed, but the CLI health check failed.",
-      } satisfies ServerProviderStatus;
-    }
-
-    const version = versionProbe.result;
-    const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
     const configuredAgentDir = nonEmptyTrimmed(agentDir);
     return {
       provider: PI_PROVIDER,
@@ -2058,11 +2209,16 @@ export const checkPiProviderStatus = (
       status: "ready" as const,
       available: true,
       authStatus: "unknown" as const,
-      version: parsedVersion,
       checkedAt,
-      message: configuredAgentDir
-        ? `Pi CLI is installed. Synara will use Pi agent dir ${configuredAgentDir}.`
-        : "Pi CLI is installed. Configure provider credentials inside Pi as needed.",
+      message: `${
+        providerRuntimeAvailability(PI_PROVIDER) === "installed"
+          ? "Pi SDK is installed."
+          : "Pi SDK is included with Synara."
+      } ${
+        configuredAgentDir
+          ? `Using Pi agent dir ${configuredAgentDir}.`
+          : "Configure provider credentials inside Pi as needed."
+      }`,
     } satisfies ServerProviderStatus;
   });
 
@@ -2642,9 +2798,25 @@ export function providerStatusesEqual(
       (status.message ?? null) === (next.message ?? null) &&
       JSON.stringify(comparableProviderVersionAdvisory(status.versionAdvisory)) ===
         JSON.stringify(comparableProviderVersionAdvisory(next.versionAdvisory)) &&
-      JSON.stringify(status.updateState ?? null) === JSON.stringify(next.updateState ?? null)
+      JSON.stringify(status.updateState ?? null) === JSON.stringify(next.updateState ?? null) &&
+      JSON.stringify(status.unavailableModels ?? null) ===
+        JSON.stringify(next.unavailableModels ?? null)
     );
   });
+}
+
+// Whether a probe shows a different account than before: signed out or in, or
+// another auth method or subscription. A timed-out probe proves nothing.
+function providerAccountChanged(
+  previous: ServerProviderStatus,
+  next: ServerProviderStatus,
+): boolean {
+  if (next.authStatus === "unknown" || previous.authStatus === "unknown") return false;
+  return (
+    previous.authStatus !== next.authStatus ||
+    (previous.authType ?? null) !== (next.authType ?? null) ||
+    (previous.authLabel ?? null) !== (next.authLabel ?? null)
+  );
 }
 
 function isTransientProviderCommandTimeout(status: ServerProviderStatus): boolean {
@@ -2859,8 +3031,6 @@ function suppressProviderVersionAdvisory(status: ServerProviderStatus): ServerPr
   };
 }
 
-// Disabled providers are a settings overlay, not a probe result. Keep the raw
-// cached/probed status intact so re-enabling a provider can reuse it immediately.
 export function projectProviderStatusesForSettings(
   statuses: ReadonlyArray<ServerProviderStatus>,
   settings: ServerSettings,
@@ -3034,10 +3204,7 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
       ).pipe(
         Effect.map((statuses) =>
           orderProviderStatuses(
-            statuses.filter(
-              (status): status is ServerProviderStatus =>
-                status !== undefined && !isDisabledProviderStatusOverlay(status),
-            ),
+            statuses.filter((status): status is ServerProviderStatus => status !== undefined),
           ),
         ),
       );
@@ -3206,15 +3373,45 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
       );
 
       const applyVolatileProviderState = Effect.fn("applyVolatileProviderState")(function* (
-        status: ServerProviderStatus,
+        probedStatus: ServerProviderStatus,
       ) {
+        const runtimeState = probedStatus.runtimeInstall
+          ? providerRuntimeInstallState(
+              providerRuntimeIdForDriver(probedStatus.driver ?? probedStatus.provider) ?? "pi",
+            )
+          : null;
+        const status: ServerProviderStatus = !runtimeState
+          ? probedStatus
+          : {
+              ...probedStatus,
+              runtimeInstall:
+                runtimeState.status === "installing"
+                  ? {
+                      status: "installing",
+                      completedPackages: runtimeState.completed,
+                      totalPackages: runtimeState.total,
+                    }
+                  : {
+                      status: "failed",
+                      failure: runtimeState.failure,
+                      message: runtimeState.message,
+                    },
+            };
+        // Models a failed turn showed the account cannot use; turn results own
+        // these, never a probe, so they are projected rather than persisted.
+        const unavailableModels = unavailableModelsFor(providerStatusInstanceKey(status));
+        const { unavailableModels: _unavailableModels, ...statusWithoutUnavailableModels } = status;
+        const statusWithModels: ServerProviderStatus =
+          unavailableModels.length > 0
+            ? { ...statusWithoutUnavailableModels, unavailableModels }
+            : statusWithoutUnavailableModels;
         const updateStates = yield* Ref.get(updateStatesRef);
-        const updateState = updateStates.get(providerStatusIdentityKey(status));
+        const updateState = updateStates.get(providerStatusIdentityKey(statusWithModels));
         if (!updateState) {
-          const { updateState: _updateState, ...statusWithoutUpdateState } = status;
+          const { updateState: _updateState, ...statusWithoutUpdateState } = statusWithModels;
           return statusWithoutUpdateState;
         }
-        return { ...status, updateState };
+        return { ...statusWithModels, updateState };
       });
 
       const applyVolatileProviderStates = (
@@ -3284,7 +3481,9 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
           return yield* Effect.forEach(
             statuses.map(suppressProviderVersionAdvisory),
             applyVolatileProviderState,
-            { concurrency: "unbounded" },
+            {
+              concurrency: "unbounded",
+            },
           );
         }
 
@@ -3523,6 +3722,11 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
         );
 
       const refreshNow = Effect.gen(function* () {
+        // A CLI installed since the last probe may sit in a well-known folder that did
+        // not exist then (Claude Code's native installer creates ~/.local/bin): put it on
+        // PATH first, so Recheck, a focus refresh or the hourly one finds it without a
+        // restart.
+        yield* Effect.sync(() => addCliInstallDirectoriesToPath());
         let revisionRetries = 0;
         while (true) {
           const refreshRevision = (yield* serverSettings.getSnapshot).revision;
@@ -3530,6 +3734,7 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
           // / logout / add account outside the app) is reflected on the next
           // refresh instead of being pinned to the old account for up to 5 minutes.
           yield* Ref.set(claudeSubscriptionCacheRef, new Map());
+          const refreshStartedAt = Date.now();
           const loadedStatuses = yield* loadProviderStatuses;
           if ((yield* serverSettings.getSnapshot).revision !== refreshRevision) {
             // A caller that joined this refresh expects the settings mutation it
@@ -3548,6 +3753,18 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
           }
           const previousRawStatuses = yield* Ref.get(statusesRef);
           const previousStatuses = yield* projectStatusesForCurrentSettings(previousRawStatuses);
+          // Models an account refused belong to that account: forget them when the
+          // probe finds another one signed in (or none). An automatic refresh of the
+          // same account keeps them, so the picker does not offer them again.
+          for (const status of loadedStatuses) {
+            const instanceId = providerStatusInstanceKey(status);
+            const previous = previousRawStatuses.find(
+              (entry) => providerStatusInstanceKey(entry) === instanceId,
+            );
+            if (previous && providerAccountChanged(previous, status)) {
+              clearUnavailableModelsRecordedBefore({ instanceId, before: refreshStartedAt });
+            }
+          }
           const stabilizedLoadedStatuses = stabilizeProviderStatusesAgainstTransientTimeouts(
             previousRawStatuses,
             loadedStatuses,
@@ -3616,6 +3833,8 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
         });
       }
 
+      yield* Effect.promise(() => configureProviderRuntimes({ baseDir: serverConfig.baseDir }));
+
       // New-chat defaults change with every composer pick and never affect
       // providers, so they must not start CLI probes.
       yield* withoutNewThreadDefaultsOnlyChanges(
@@ -3646,6 +3865,30 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
       const refresh: Effect.Effect<ProviderStatuses> = ensureRefreshFiber().pipe(
         Effect.flatMap(Fiber.join),
       );
+
+      // On-demand Pi/OpenCode installs report progress through the provider statuses;
+      // once one settles, probe again so an installed provider shows its real state.
+      const unsubscribeProviderRuntimes = subscribeProviderRuntimeChanges((_runtime, finished) => {
+        Effect.runFork(
+          finished
+            ? Effect.gen(function* () {
+                yield* publishProjectedStatuses();
+                if (yield* Ref.get(refreshFiberRef)) {
+                  yield* Ref.set(refreshNeedsFollowUpRef, true);
+                }
+                yield* ensureRefreshFiber().pipe(Effect.flatMap(Fiber.join));
+              })
+            : publishProjectedStatuses().pipe(Effect.asVoid),
+        );
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribeProviderRuntimes));
+
+      // A turn that hit (or cleared) an unavailable model changes the picker now,
+      // not at the next probe.
+      const unsubscribeUnavailableModels = subscribeUnavailableModelChanges(() => {
+        Effect.runFork(publishProjectedStatuses().pipe(Effect.asVoid));
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribeUnavailableModels));
 
       const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 

@@ -88,7 +88,7 @@ export const SETTINGS_ROW_SOURCES: ReadonlyArray<{
   },
   {
     file: "src/components/settings/providers/ProvidersSettingsPanel.tsx",
-    owners: { ProvidersSettingsPanel: "providers" },
+    owners: { SynaraProvidersSettingsPanel: "providers" },
   },
   {
     file: "src/components/settings/UsageLimitRecoverySetting.tsx",
@@ -96,7 +96,8 @@ export const SETTINGS_ROW_SOURCES: ReadonlyArray<{
   },
   {
     file: "src/components/settings/ModelsSettingsPanel.tsx",
-    owners: { ModelsSettingsPanel: "models" },
+    // Models are folded into the Agent page (Lattice renders them above it).
+    owners: { ModelsSettingsPanel: "providers" },
   },
   {
     file: "src/components/settings/SkillsSettingsPanel.tsx",

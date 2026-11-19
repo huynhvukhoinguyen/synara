@@ -44,6 +44,11 @@ import {
   serverSettingsQueryOptions,
 } from "~/lib/serverReactQuery";
 import { cn } from "~/lib/utils";
+import { isSynaraEmbedMode } from "~/embedMode";
+import {
+  useServerDisabledProviders,
+  writeServerDisabledProviders,
+} from "~/lib/serverDisabledProviders";
 import { ensureNativeApi } from "~/nativeApi";
 import { isProviderKind, sameProviderOrder } from "~/providerOrdering";
 import {
@@ -72,6 +77,7 @@ import {
   SettingsSection,
   SettingsSectionShell,
 } from "../SettingsPanelPrimitives";
+import { LatticeProvidersSettingsPanel } from "./LatticeProvidersSettingsPanel";
 import { ProviderAgentRow } from "./ProviderAgentRow";
 import { ProviderSetupGuideButton } from "./ProviderDocsLinks";
 import {
@@ -90,7 +96,7 @@ import {
   providerUpdateStatusLabel,
 } from "./providerUpdateLabels";
 
-function setProviderListMembership(
+export function setProviderListMembership(
   current: ReadonlyArray<ProviderKind>,
   provider: ProviderKind,
   included: boolean,
@@ -102,17 +108,28 @@ function setProviderListMembership(
 export type ProvidersSettingsPanelProps = AppSettingsBinding & {
   readonly active: boolean;
   readonly providerTarget?: ProviderKind | null;
+  /** Agent rows a Lattice deep link opens (`resolveSettingsTarget`). */
+  readonly providerTargets?: ReadonlyArray<ProviderKind>;
   readonly resetEpoch: number;
   readonly updateSettingsAndWait: (patch: Partial<AppSettings>) => Promise<void>;
   /** Opens the Accounts page on one provider's accounts. */
   readonly onManageAccounts: (provider: ProviderKind) => void;
 };
 
-export function ProvidersSettingsPanel({
+// Lattice's embedded Agent page keeps its own layout: no enable switches, and each agent's
+// accounts inside its row, since Lattice frames no Accounts page.
+export function ProvidersSettingsPanel(props: ProvidersSettingsPanelProps) {
+  return isSynaraEmbedMode() ? (
+    <LatticeProvidersSettingsPanel {...props} />
+  ) : (
+    <SynaraProvidersSettingsPanel {...props} />
+  );
+}
+
+function SynaraProvidersSettingsPanel({
   settings,
   defaults,
   updateSettings,
-  updateSettingsAndWait,
   active,
   providerTarget = null,
   resetEpoch,
@@ -144,9 +161,11 @@ export function ProvidersSettingsPanel({
     () => new Set<ProviderKind>(settings.hiddenProviders),
     [settings.hiddenProviders],
   );
+  // Agents are switched off in server settings; the fork keeps no app-level list.
+  const disabledProviders = useServerDisabledProviders();
   const disabledProviderSet = useMemo(
-    () => new Set<ProviderKind>(settings.disabledProviders),
-    [settings.disabledProviders],
+    () => new Set<ProviderKind>(disabledProviders),
+    [disabledProviders],
   );
   const providerVisibilityOptionsByProvider = useMemo(
     () => new Map(PROVIDER_VISIBILITY_OPTIONS.map((option) => [option.provider, option])),
@@ -228,10 +247,7 @@ export function ProvidersSettingsPanel({
     ],
   );
   const outdatedProviderCount = outdatedProviderStatuses.length;
-  const providerEnablementDirty = !setsEqual(
-    new Set(settings.disabledProviders),
-    new Set(defaults.disabledProviders),
-  );
+  const providerEnablementDirty = disabledProviders.length > 0;
   // Only what the Agents list resets: accounts are the Accounts page's.
   const agentsListDirty =
     providerEnablementDirty ||
@@ -240,18 +256,18 @@ export function ProvidersSettingsPanel({
     isProviderCliFieldsDirty(settings, defaults);
 
   const updateProviderEnablement = useCallback(
-    async (disabledProviders: ProviderKind[]) => {
+    async (nextDisabledProviders: ReadonlyArray<ProviderKind>) => {
       if (providerEnablementMutationInFlightRef.current) return;
       providerEnablementMutationInFlightRef.current = true;
       setProviderEnablementMutationPending(true);
       try {
-        await updateSettingsAndWait({ disabledProviders });
+        await writeServerDisabledProviders(queryClient, nextDisabledProviders);
       } finally {
         providerEnablementMutationInFlightRef.current = false;
         setProviderEnablementMutationPending(false);
       }
     },
-    [updateSettingsAndWait],
+    [queryClient],
   );
 
   useSettingsRestoreSignal(resetEpoch, () => {
@@ -381,7 +397,7 @@ export function ProvidersSettingsPanel({
             onCheckedChange={(checked) => {
               if (!checked) return;
               void updateProviderEnablement(
-                setProviderListMembership(settings.disabledProviders, option.provider, false),
+                setProviderListMembership(disabledProviders, option.provider, false),
               );
             }}
             aria-label={t("settings:enableProvider", { provider: option.title })}
@@ -399,7 +415,7 @@ export function ProvidersSettingsPanel({
       ...createProviderCliFieldsResetPatch(defaults),
     });
     setOpenInstallProviders(createClosedProviderInstallDisclosureState());
-    if (providerEnablementDirty) void updateProviderEnablement([...defaults.disabledProviders]);
+    if (providerEnablementDirty) void updateProviderEnablement([]);
   };
 
   return (
@@ -464,11 +480,7 @@ export function ProvidersSettingsPanel({
                       }
                       onDisable={() =>
                         void updateProviderEnablement(
-                          setProviderListMembership(
-                            settings.disabledProviders,
-                            option.provider,
-                            true,
-                          ),
+                          setProviderListMembership(disabledProviders, option.provider, true),
                         )
                       }
                       onHiddenChange={(hidden) =>

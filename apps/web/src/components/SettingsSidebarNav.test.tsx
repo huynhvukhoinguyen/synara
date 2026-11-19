@@ -3,14 +3,38 @@
 // Layer: Component rendering tests
 // Depends on: SettingsSidebarNav, the settings search index, and React server rendering.
 
-import { describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "../i18n";
+import { SettingsRow } from "./settings/SettingsPanelPrimitives";
 
+import { SettingsSidebarNav } from "./SettingsSidebarNav";
+import { normalizeSettingsSection, settingRowAnchorId } from "../settingsNavigation";
 import {
   SETTINGS_SEARCH_ENTRIES,
   rankSettingsSearchEntries,
   settingsSearchEntryTarget,
   settingsSearchEntryTitle,
 } from "../settingsSearchIndex";
+
+// Lattice's embedded panel keeps reading in Chinese when Lattice does.
+describe("Chinese settings in Lattice's panel", () => {
+  afterEach(() => void i18n.changeLanguage("en"));
+
+  it("renders Chinese labels while retaining explicit navigation targets", () => {
+    void i18n.changeLanguage("zh-CN");
+    const html = renderToStaticMarkup(
+      <SettingsRow
+        id="setting-default-provider"
+        title="settings:changed_defaultProvider"
+        description="settings:chooseTheProviderUsedForNewChatsAgentCodex"
+      />,
+    );
+    expect(html).toContain('id="setting-default-provider"');
+    expect(html).toContain("默认提供商");
+    expect(html).toContain("选择新聊天使用的提供商");
+  });
+});
 
 describe("rankSettingsSearchEntries", () => {
   it("returns nothing for an empty query", () => {
@@ -97,5 +121,46 @@ describe("account search", () => {
     expect(settingsSearchEntryTarget(byEmail!)).toBe("setting-account-codex-work");
     const byAgent = rankSettingsSearchEntries("claude personal", 12, context);
     expect(byAgent.some((entry) => entry.id === "accounts:account:claudeAgent")).toBe(true);
+  });
+});
+
+describe("SettingsSidebarNav", () => {
+  it("renders the soft search input alongside the section list", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsSidebarNav activeSection="general" onSelectSection={vi.fn()} />,
+    );
+
+    expect(markup).toContain('aria-label="Search settings"');
+    expect(markup).toContain('aria-label="Settings sections"');
+  });
+
+  it("groups settings by user intent instead of implementation ownership", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsSidebarNav activeSection="general" onSelectSection={vi.fn()} />,
+    );
+
+    expect(markup).toContain(">Lattice<");
+    expect(markup).toContain(">Agents<");
+    expect(markup).toContain(">Connections<");
+    expect(markup).toContain(">Workspace<");
+    expect(markup).toContain(">System<");
+    expect(markup).toContain(">Chats<");
+    expect(markup).toContain("MCP connections");
+    expect(markup).toContain("Agent providers");
+    expect(markup).not.toContain("Models &amp; writing");
+    expect(markup).toContain(">Worktrees<");
+    expect(markup).toContain(">Advanced<");
+    expect(markup).toContain(">Archive<");
+    expect(markup).not.toContain(">App<");
+    expect(markup).not.toContain(">Synara<");
+  });
+
+  it("routes the former Models & writing section into Agent providers", () => {
+    expect(normalizeSettingsSection("models")).toBe("providers");
+    expect(
+      SETTINGS_SEARCH_ENTRIES.filter((entry) => entry.id.startsWith("models:")).every(
+        (entry) => entry.section === "providers",
+      ),
+    ).toBe(true);
   });
 });

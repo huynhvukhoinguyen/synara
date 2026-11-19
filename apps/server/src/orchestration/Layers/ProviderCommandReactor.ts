@@ -30,6 +30,8 @@ import {
   type OrchestrationEvent,
   OrchestrationEventType,
   type OrchestrationRegenerateThreadTitleResult,
+  type OrchestrationShowPanelThreadInput,
+  type OrchestrationShowPanelThreadResult,
   PROVIDER_DISPLAY_NAMES,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type ProviderMentionReference,
@@ -103,7 +105,10 @@ import {
   resolveThreadWorkspaceCwd,
 } from "../../checkpointing/Utils.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
+import { AgentGatewayCredentials } from "../../agentGateway/Services/AgentGatewayCredentials.ts";
 import { AgentGatewayOperationRepository } from "../../agentGateway/Services/AgentGatewayOperationRepository.ts";
+import { AgentQualityTrace } from "../../agentGateway/Services/AgentQualityTrace.ts";
+import { ACTIVE_AGENT_HOST_PROFILE } from "../../agentGateway/hostProfile.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import {
   ProviderAdapterProcessError,
@@ -118,6 +123,7 @@ import {
   buildInlineSkillInstructions,
   formatInlineSkillInstructions,
   loadInlineSkillBlocks,
+  selectNativelyServedSkills,
   selectSkillsToInline,
   shouldInlineSkillForProvider,
 } from "../../provider/skillPromptInjection.ts";
@@ -132,6 +138,8 @@ import {
   filterDisabledSkills,
   skillNameKey,
 } from "../../provider/skillsCatalog.ts";
+import * as nodePath from "node:path";
+import { resolveClaudePluginSkills } from "../../provider/claudeSkillsPlugin.ts";
 import {
   PROVIDER_DEBUG_MODE_PROMPT_PREFIX,
   withProviderDebugModePrompt,
@@ -195,6 +203,11 @@ import { diagnosticIssueReason } from "@synara/shared/diagnosticIssue";
 import { reportBetaOperationalIssue } from "../../betaOperationalIssue.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { providerUsageRecoveryBindingKey } from "../../providerUsage/index.ts";
+import {
+  claudeLaunchSettingsEqual,
+  readClaudeLaunchSettings,
+  type ClaudeLaunchSettings,
+} from "../../provider/claudeLaunchSettings.ts";
 import {
   mergeProviderStartOptions,
   isProviderKind,
@@ -882,7 +895,7 @@ function withProviderThreadStatePrompts(input: {
 function providerPromptOverflowIssue(goalPromptOverheadChars: number): string {
   return goalPromptOverheadChars > 0
     ? "The latest message is too long to include the persistent thread goal. Shorten the message and retry."
-    : "The latest message is too long to include Synara Debug mode instructions. Shorten the message and retry.";
+    : `The latest message is too long to include ${ACTIVE_AGENT_HOST_PROFILE.displayName} Debug mode instructions. Shorten the message and retry.`;
 }
 
 // First visible turns and later continuations share the same pursuit fence.
@@ -1123,6 +1136,7 @@ const make = Effect.gen(function* () {
   } = yield* ProviderCommandReactorConfig;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const deliveryRepository = yield* OrchestrationEventDeliveryRepository;
+  const agentQualityTrace = yield* AgentQualityTrace;
   const turnCheckpointCoordinator = yield* TurnCheckpointCoordinator;
   const queuedTurnPromotions = yield* QueuedTurnPromotionRepository;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -1130,6 +1144,11 @@ const make = Effect.gen(function* () {
   const providerDiscovery = yield* ProviderDiscoveryService;
   const computerService = yield* Effect.serviceOption(ComputerService);
   const gatewaySessions = yield* Effect.serviceOption(AgentGatewaySessionRegistry);
+  // A draft's warm runtime connects to the gateway before its thread exists;
+  // the registration lets that connection succeed (see mcpTransport). A hard
+  // dependency, so a composition that forgets to share the gateway's instance
+  // fails to typecheck instead of silently refusing every warm draft.
+  const gatewayCredentials = yield* AgentGatewayCredentials;
   // Resolved at make time: fibers that run turn dispatch do not inherit the
   // layer environment, so per-turn serviceOption lookups would see an empty
   // context.
@@ -1244,6 +1263,59 @@ const make = Effect.gen(function* () {
   // was actually spawned with so a changed value restarts the runtime instead
   // of silently reusing a session provisioned under the old approval set.
   const threadSessionAutoApproveSynaraTools = new Map<string, boolean>();
+  // Runtimes a panel started ahead of the first send (showPanelThread). A draft
+  // entry names a thread the projection does not have yet; its first turn
+  // adopts the runtime when the launch still matches. Any real use of the
+  // thread clears the entry, and an unused one stops when the panel moves on.
+  const prewarmedSessions = new Map<
+    string,
+    {
+      readonly draft: boolean;
+      readonly modelSelection: ModelSelection;
+      /** A draft's: what its Claude Code was spawned with outside the provider options. */
+      readonly launchSettings?: ClaudeLaunchSettings;
+    }
+  >();
+  const currentClaudeLaunchSettings = readClaudeLaunchSettings.pipe(
+    Effect.provideService(ServerSettingsService, serverSettings),
+  );
+  /** False for a warm draft spawned before a launch setting changed (or unknown). */
+  const prewarmedLaunchCurrent = (launchSettings: ClaudeLaunchSettings | undefined) =>
+    launchSettings === undefined
+      ? Effect.succeed(false)
+      : currentClaudeLaunchSettings.pipe(
+          Effect.map((current) => claudeLaunchSettingsEqual(launchSettings, current)),
+        );
+  /**
+   * For Claude: SKILL.md path -> `lattice:<name>` for every skill its skills
+   * plugin serves under the current Settings, so a mention points Claude at
+   * its Skill tool instead of pasting the SKILL.md a second time. A session
+   * started before a toggle may differ; the pointer carries the path for that.
+   */
+  const nativelyServedSkillsFor = (provider: ProviderKind) =>
+    provider !== "claudeAgent"
+      ? Effect.succeed(undefined)
+      : currentClaudeLaunchSettings.pipe(
+          Effect.flatMap((launchSettings) =>
+            Effect.tryPromise(() =>
+              resolveClaudePluginSkills({
+                synaraBaseDir: serverConfig.baseDir,
+                disabledSkillNames: launchSettings.disabledSkillNames,
+              }),
+            ),
+          ),
+          Effect.map(
+            (skills): ReadonlyMap<string, string> =>
+              new Map(
+                skills.map((skill) => [nodePath.resolve(skill.skillPath), skill.qualifiedName]),
+              ),
+          ),
+          Effect.catch((error) =>
+            Effect.logWarning("failed to resolve Claude's plugin-served skills", { error }).pipe(
+              Effect.as(undefined),
+            ),
+          ),
+        );
   // The extra project folders each live session was granted. Editing a project's folders
   // restarts the session (keeping its resume cursor) so the provider sees the new set.
   const threadSessionAdditionalDirectories = new Map<string, ReadonlyArray<string>>();
@@ -2660,10 +2732,18 @@ const make = Effect.gen(function* () {
       readonly enableComputerControl?: boolean;
       readonly runtimeMode?: RuntimeMode;
       readonly registerPriorTranscriptBootstrapOnFreshStart?: boolean;
+      /** A panel warm-up rather than real use of the thread. */
+      readonly prewarm?: boolean;
       /** The user explicitly requested a same-thread handoff. */
       readonly providerHandoff?: boolean;
     },
   ) {
+    const prewarmed = prewarmedSessions.get(threadId);
+    if (options?.prewarm !== true) {
+      prewarmedSessions.delete(threadId);
+      // The thread exists now, so the gateway resolves it like any other.
+      if (prewarmed?.draft === true) gatewayCredentials.releaseDraftThread?.(threadId);
+    }
     const thread = yield* resolveThreadShell(threadId);
     if (!thread) {
       return yield* Effect.die(
@@ -3018,6 +3098,52 @@ const make = Effect.gen(function* () {
             : "Finish or stop this thread's background tasks before using the project's updated folders.",
       });
     }
+    // A warm draft spawned before "Load my MCP servers" (or another setting
+    // Claude Code reads only at spawn) changed is not what this send would
+    // start, whether the first send finds it bound to the thread or not.
+    const warmDraftLaunchStale =
+      prewarmed?.draft === true &&
+      options?.prewarm !== true &&
+      !(yield* prewarmedLaunchCurrent(prewarmed.launchSettings));
+    // A draft's first send adopts the runtime its panel started while the user
+    // typed. Anything that would restart a bound session starts fresh instead;
+    // ProviderService retires the warm runtime before spawning its replacement.
+    if (
+      prewarmed?.draft === true &&
+      options?.prewarm !== true &&
+      thread.session === null &&
+      activeSessionBeforeEnsure !== undefined
+    ) {
+      const adoptable =
+        activeSessionBeforeEnsure.provider === preferredProvider &&
+        (activeSessionBeforeEnsure.providerInstanceId ?? preferredProvider) ===
+          desiredProviderInstanceId &&
+        activeSessionBeforeEnsure.runtimeMode === desiredRuntimeMode &&
+        !workspaceChanged &&
+        additionalDirectories.length === 0 &&
+        !autoApproveSynaraTools &&
+        (options?.enableComputerControl ?? false) === false &&
+        !warmDraftLaunchStale &&
+        !claudeSelectionRequiresRestart(prewarmed.modelSelection, desiredModelSelection) &&
+        !shouldRestartForProviderOptionsChange({
+          requestedProvider: desiredRoutedModelSelection.provider,
+          previousProviderOptions: threadProviderOptions.get(threadId),
+          requestedProviderOptions: resolvedProviderOptions,
+        });
+      if (adoptable) {
+        yield* bindSessionToThread(activeSessionBeforeEnsure);
+        suppressContextBootstrapOnNextStartThreadIds.delete(threadId);
+        return {
+          activeSessionBeforeEnsure,
+          activeSession: activeSessionBeforeEnsure,
+          nativeResumeSucceeded: false,
+          nativeResumeFailed: false,
+          nativeSessionRestarted: false,
+          computerControlRestartDeferred: false,
+          forkComputerControl: undefined,
+        };
+      }
+    }
     const reusableSession =
       thread.session && thread.session.status !== "stopped" ? activeSessionBeforeEnsure : undefined;
     if (reusableSession) {
@@ -3097,7 +3223,8 @@ const make = Effect.gen(function* () {
         !shouldRestartForModelSelectionChange &&
         !computerControlChanged &&
         !autoApproveSynaraToolsChanged &&
-        !providerOptionsChanged
+        !providerOptionsChanged &&
+        !warmDraftLaunchStale
       ) {
         return {
           activeSessionBeforeEnsure,
@@ -3812,6 +3939,10 @@ const make = Effect.gen(function* () {
         attached: input.skills,
         resolveTypedSkills,
       });
+      const steerNativelyServedSkills =
+        steerSkills !== undefined && steerSkills.length > 0
+          ? yield* nativelyServedSkillsFor(steerProvider)
+          : undefined;
       // No `providerInput`: a subagent steer is never a native slash command, so
       // Claude gets every referenced skill inline.
       const steerSkillInlineText =
@@ -3820,6 +3951,7 @@ const make = Effect.gen(function* () {
               buildInlineSkillInstructions({
                 provider: steerProvider,
                 skills: steerSkills,
+                nativelyServedSkills: steerNativelyServedSkills,
                 maxChars: Math.max(
                   0,
                   PROVIDER_SEND_TURN_MAX_INPUT_CHARS -
@@ -4293,6 +4425,11 @@ const make = Effect.gen(function* () {
     // Portable skills fallback: skills the provider cannot load natively travel
     // inline. Each file is read once here; which ones go inline depends on the
     // final prompt, and the stale-resume retry below can wrap it differently.
+    // A skill Claude's skills plugin serves gets a pointer to its plugin name instead.
+    const nativelyServedSkills =
+      turnSkills !== undefined && turnSkills.length > 0
+        ? yield* nativelyServedSkillsFor(selectedProvider as ProviderKind)
+        : undefined;
     const inlineSkillBlocks: ReadonlyMap<string, string> =
       turnSkills !== undefined && turnSkills.length > 0
         ? yield* Effect.tryPromise(() =>
@@ -4300,6 +4437,7 @@ const make = Effect.gen(function* () {
               selectSkillsToInline({
                 provider: selectedProvider as ProviderKind,
                 skills: turnSkills,
+                nativelyServedSkills,
               }),
             ),
           ).pipe(
@@ -4332,9 +4470,14 @@ const make = Effect.gen(function* () {
                 provider: selectedProvider as ProviderKind,
                 skills: turnSkills,
                 claudeConfigDir,
+                nativelyServedSkills,
                 // A steer may join a running turn, where Claude's own `/name`
                 // loading is not guaranteed, so it gets every skill inline.
                 ...(input.dispatchMode === "steer" ? {} : { providerInput: promptWithoutSkills }),
+              }),
+              nativeSkills: selectNativelyServedSkills({
+                skills: turnSkills,
+                nativelyServedSkills,
               }),
               blocks: inlineSkillBlocks,
               maxChars: Math.max(
@@ -4398,6 +4541,37 @@ const make = Effect.gen(function* () {
       ...(providerMentions !== undefined ? { mentions: providerMentions } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+    };
+    const withQualityContext = <E, R>(
+      operation: () => Effect.Effect<ProviderTurnStartResult, E, R>,
+    ) => {
+      const dispatchId = crypto.randomUUID();
+      const prepareQualityContext = agentQualityTrace.prepareTurnContext({
+        dispatchId,
+        threadId: input.threadId,
+        messageId: input.messageId,
+        messageText: input.messageText,
+        recordedAt: input.createdAt,
+        dispatchStartedAt: new Date().toISOString(),
+      });
+      return prepareQualityContext.pipe(
+        Effect.andThen(operation()),
+        Effect.tap((result) =>
+          agentQualityTrace.bindTurnContext({
+            threadId: input.threadId,
+            dispatchId,
+            turnId: result.turnId,
+          }),
+        ),
+        Effect.onExit((exit) =>
+          Exit.isSuccess(exit)
+            ? Effect.void
+            : agentQualityTrace.failTurnContext({
+                threadId: input.threadId,
+                dispatchId,
+              }),
+        ),
+      );
     };
     // Baseline capture may time out, but provider execution must never bypass
     // an Undo that still owns this checkout. Keep the activation wait outside
@@ -4484,11 +4658,13 @@ const make = Effect.gen(function* () {
             ...providerTurnInput,
             ...(messageText ? { input: messageText } : {}),
           };
-          return yield* input.claudeCompactionCancellation
-            ? providerService.sendTurn(turnInput, {
-                claudeCompactionCancellation: input.claudeCompactionCancellation,
-              })
-            : providerService.sendTurn(turnInput);
+          return yield* withQualityContext(() =>
+            input.claudeCompactionCancellation
+              ? providerService.sendTurn(turnInput, {
+                  claudeCompactionCancellation: input.claudeCompactionCancellation,
+                })
+              : providerService.sendTurn(turnInput),
+          );
         }),
       );
 
@@ -4647,14 +4823,17 @@ const make = Effect.gen(function* () {
     let pendingContextBootstrapAttempt: PendingContextBootstrapAttempt | undefined;
     let startedTurn: ProviderTurnStartResult | undefined;
 
-    if (input.reviewTarget !== undefined) {
+    const reviewTarget = input.reviewTarget;
+    if (reviewTarget !== undefined) {
       yield* capturePreTurnBaselines;
       startedTurn = yield* withProviderWorkspaceLease(
         Effect.suspend(() =>
-          providerService.startReview({
-            threadId: input.threadId,
-            target: input.reviewTarget!,
-          }),
+          withQualityContext(() =>
+            providerService.startReview({
+              threadId: input.threadId,
+              target: reviewTarget,
+            }),
+          ),
         ),
       ).pipe(Effect.onError(() => cancelPendingHubBaseline));
     } else if (input.dispatchMode === "steer") {
@@ -8233,6 +8412,7 @@ const make = Effect.gen(function* () {
               (originalThread.session?.status === "running"
                 ? (originalThread.session.activeTurnId ?? null)
                 : null),
+            latestTurn: originalThread.latestTurn,
           });
     if (!editTarget.editable) {
       return yield* Effect.fail(
@@ -9091,6 +9271,29 @@ const make = Effect.gen(function* () {
     }
   });
 
+  // Lattice: Codex's own clients (`codex resume`, VS Code, the desktop app) list a thread
+  // by its native name, so a chat's title is pushed to its live Codex thread. Titles that
+  // came from Codex itself arrive through provider ingestion (`provider:` commands) and are
+  // not echoed back. Naming is a courtesy: a failure is logged and never fails the chat.
+  const pushThreadTitleToProvider = (event: ProviderIntentEvent) =>
+    Effect.gen(function* () {
+      if (event.type !== "thread.meta-updated" || event.payload.title === undefined) return;
+      if (event.commandId?.startsWith("provider:")) return;
+      yield* providerService
+        .setThreadName({ threadId: event.payload.threadId, name: event.payload.title })
+        .pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.failCause(cause)
+              : Effect.logWarning("could not give the provider thread the chat's title", {
+                  threadId: event.payload.threadId,
+                  cause: Cause.pretty(cause),
+                }),
+          ),
+          Effect.forkScoped,
+        );
+    });
+
   const processDomainEvent = (event: ProviderIntentEvent) =>
     Effect.gen(function* () {
       switch (event.type) {
@@ -9136,7 +9339,11 @@ const make = Effect.gen(function* () {
           return;
         }
         case "thread.created":
-          threadSessionModelSelections.set(event.payload.threadId, event.payload.modelSelection);
+          // A draft's warm runtime was spawned from the panel's selection; keep
+          // comparing against that so a spawn-fixed change still restarts it.
+          if (prewarmedSessions.get(event.payload.threadId)?.draft !== true) {
+            threadSessionModelSelections.set(event.payload.threadId, event.payload.modelSelection);
+          }
           return;
         case "thread.deleted":
           // Cancel any queued/promoting turns for the deleted thread BEFORE
@@ -9175,6 +9382,7 @@ const make = Effect.gen(function* () {
             );
           return;
         case "thread.meta-updated": {
+          yield* pushThreadTitleToProvider(event);
           const thread = yield* resolveThreadShell(event.payload.threadId);
           const startsOrResumesGoal =
             event.payload.goalPausedAt == null && event.payload.goalStartedAt != null;
@@ -10929,7 +11137,7 @@ const make = Effect.gen(function* () {
                 threadId: blocker.threadId,
                 kind: "provider.turn.start.failed",
                 summary: "Previous messages were not sent",
-                detail: `Synara recovered an earlier provider failure, but ${skippedPromptCount} ${noun} skipped while the thread was blocked. Resend ${skippedPromptCount === 1 ? "it" : "them"} to continue.`,
+                detail: `${ACTIVE_AGENT_HOST_PROFILE.displayName} recovered an earlier provider failure, but ${skippedPromptCount} ${noun} skipped while the thread was blocked. Resend ${skippedPromptCount === 1 ? "it" : "them"} to continue.`,
                 turnId: null,
                 createdAt,
               });
@@ -11624,6 +11832,156 @@ const make = Effect.gen(function* () {
       );
     });
 
+  // Stop a runtime the panel warmed for a thread it no longer shows, unless
+  // the thread was used meanwhile (which clears its entry).
+  /** Under the thread's session lease. */
+  const stopPrewarmedSession = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const record = prewarmedSessions.get(threadId);
+      if (!record) return;
+      prewarmedSessions.delete(threadId);
+      if (record.draft) {
+        gatewayCredentials.releaseDraftThread?.(threadId);
+        threadSessionModelSelections.delete(threadId);
+        threadSessionComputerControl.delete(threadId);
+        threadProviderOptions.delete(threadId);
+        yield* providerService.stopSession({ threadId });
+      } else if (providerService.stopRuntimeSession) {
+        yield* providerService.stopRuntimeSession({ threadId });
+      }
+    });
+
+  const releasePrewarmedSession = (threadId: ThreadId) =>
+    withProviderSessionLease(threadId, stopPrewarmedSession(threadId)).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider command reactor could not release a warm runtime", {
+          threadId,
+          cause,
+        }),
+      ),
+    );
+
+  const prewarmThreadSession = (
+    threadId: ThreadId,
+    prewarm: NonNullable<OrchestrationShowPanelThreadInput["prewarm"]>,
+  ): Effect.Effect<OrchestrationShowPanelThreadResult> =>
+    Effect.gen(function* () {
+      const sessions = yield* providerService.listSessions();
+      if (sessions.some((session) => session.threadId === threadId)) {
+        const record = prewarmedSessions.get(threadId);
+        // A warm draft spawned before a launch setting changed would not be
+        // adopted by its first send: start the one that would, while it types.
+        if (record?.draft !== true || (yield* prewarmedLaunchCurrent(record.launchSettings))) {
+          return { prewarm: "running" as const };
+        }
+        yield* stopPrewarmedSession(threadId);
+      }
+      const thread = yield* resolveThreadShell(threadId);
+      if (thread) {
+        // A stopped runtime resumes exactly as the next turn would start it.
+        prewarmedSessions.set(threadId, { draft: false, modelSelection: prewarm.modelSelection });
+        yield* ensureSessionForThread(threadId, new Date().toISOString(), {
+          modelSelection: prewarm.modelSelection,
+          runtimeMode: prewarm.runtimeMode,
+          prewarm: true,
+        });
+        return { prewarm: "started" as const };
+      }
+      // A draft: start what its first send would start for a local chat.
+      const settings = yield* serverSettings.getSettings;
+      const instanceId = prewarm.modelSelection.instanceId ?? prewarm.modelSelection.provider;
+      const instance = resolveProviderInstance(settings, { instanceId });
+      if (!instance || !instance.enabled || instance.driver !== "claudeAgent") {
+        return { prewarm: "skipped" as const };
+      }
+      const project = Option.getOrUndefined(
+        yield* projectionSnapshotQuery.getProjectShellById(prewarm.projectId),
+      );
+      if (!project || (project.additionalFolders ?? []).length > 0) {
+        return { prewarm: "skipped" as const };
+      }
+      const cwd = yield* resolveProjectedThreadWorkspaceCwd({
+        projectId: prewarm.projectId,
+        envMode: "local",
+        worktreePath: null,
+        workingDirectory: null,
+      });
+      const providerOptions = mergeProviderStartOptions(
+        providerStartOptionsFromServerSettings(settings),
+        providerStartOptionsFromInstance(instance),
+      );
+      prewarmedSessions.set(threadId, {
+        draft: true,
+        modelSelection: prewarm.modelSelection,
+        launchSettings: yield* currentClaudeLaunchSettings,
+      });
+      threadSessionModelSelections.set(threadId, prewarm.modelSelection);
+      threadSessionComputerControl.set(threadId, false);
+      setThreadProviderOptions(threadId, providerOptions);
+      // Before the spawn: Claude Code connects to the gateway at startup and
+      // keeps a server that refused it failed for the whole session.
+      gatewayCredentials.registerDraftThread?.(threadId);
+      yield* providerService
+        .startSession(threadId, {
+          threadId,
+          provider: "claudeAgent",
+          providerInstanceId: instance.instanceId,
+          ...(cwd ? { cwd } : {}),
+          modelSelection: {
+            ...prewarm.modelSelection,
+            provider: "claudeAgent",
+            instanceId: instance.instanceId,
+          } as ModelSelection,
+          providerOptions,
+          runtimeMode: prewarm.runtimeMode,
+        })
+        .pipe(
+          Effect.onError(() =>
+            Effect.sync(() => gatewayCredentials.releaseDraftThread?.(threadId)),
+          ),
+        );
+      return { prewarm: "started" as const };
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider command reactor could not prewarm a thread", {
+          threadId,
+          cause,
+        }).pipe(Effect.as({ prewarm: "skipped" as const })),
+      ),
+    );
+
+  const showPanelThread: ProviderCommandReactorShape["showPanelThread"] = (input) =>
+    Effect.gen(function* () {
+      const { previousThreadId } = providerService.setPanelVisibleThread
+        ? yield* providerService.setPanelVisibleThread({
+            panelId: input.panelId,
+            threadId: input.threadId,
+          })
+        : { previousThreadId: null };
+      if (previousThreadId !== null && prewarmedSessions.has(previousThreadId)) {
+        yield* releasePrewarmedSession(previousThreadId);
+      }
+      if (input.threadId === null || input.prewarm === undefined) {
+        return { prewarm: "not-requested" as const };
+      }
+      // The measured cold start is Claude Code's; other providers start as before.
+      if (input.prewarm.modelSelection.provider !== "claudeAgent") {
+        return { prewarm: "skipped" as const };
+      }
+      const threadId = input.threadId;
+      return yield* withProviderSessionLease(
+        threadId,
+        prewarmThreadSession(threadId, input.prewarm),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider command reactor could not prewarm a thread", {
+            threadId,
+            cause,
+          }).pipe(Effect.as({ prewarm: "skipped" as const })),
+        ),
+      );
+    });
+
   return {
     start,
     drain,
@@ -11631,6 +11989,7 @@ const make = Effect.gen(function* () {
     listBlockingDeliveries,
     reconcileDelivery,
     regenerateThreadTitle,
+    showPanelThread,
   } satisfies ProviderCommandReactorShape;
 });
 

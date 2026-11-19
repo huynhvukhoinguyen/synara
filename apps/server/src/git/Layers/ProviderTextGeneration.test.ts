@@ -7,6 +7,7 @@ import {
   CursorTextGeneration,
   DroidTextGeneration,
   OpenCodeTextGeneration,
+  PiTextGeneration,
   type TextGenerationShape,
   TextGeneration,
 } from "../Services/TextGeneration.ts";
@@ -81,6 +82,9 @@ function createTextGenerationDouble(label: string) {
         reason: `${label} completion`,
       }),
   );
+  const generateTextTask = vi.fn<TextGenerationShape["generateTextTask"]>(() =>
+    Effect.succeed({ text: `${label} text` }),
+  );
 
   return {
     service: {
@@ -94,6 +98,7 @@ function createTextGenerationDouble(label: string) {
       generateProjectDigest,
       generateAutomationIntent,
       evaluateAutomationCompletion,
+      generateTextTask,
     } satisfies TextGenerationShape,
     generateCommitMessage,
     generatePrContent,
@@ -104,6 +109,7 @@ function createTextGenerationDouble(label: string) {
     generateComposerPrediction,
     generateAutomationIntent,
     evaluateAutomationCompletion,
+    generateTextTask,
   };
 }
 
@@ -117,6 +123,7 @@ function makeProviderTextGenerationTestLayer(
   const cursor = createTextGenerationDouble("cursor");
   const droid = createTextGenerationDouble("droid");
   const opencode = createTextGenerationDouble("opencode");
+  const pi = createTextGenerationDouble("pi");
   const listRecentCommits = vi.fn<GitCoreShape["listRecentCommits"]>(() =>
     Effect.succeed({
       commits: [{ sha: "abc", shortSha: "abc", subject: "feat: add settings", committedAt: "" }],
@@ -137,6 +144,7 @@ function makeProviderTextGenerationTestLayer(
     Layer.provide(Layer.succeed(CursorTextGeneration, cursor.service)),
     Layer.provide(Layer.succeed(DroidTextGeneration, droid.service)),
     Layer.provide(Layer.succeed(OpenCodeTextGeneration, opencode.service)),
+    Layer.provide(Layer.succeed(PiTextGeneration, pi.service)),
     Layer.provide(ServerSettingsService.layerTest(settingsOverrides)),
     Layer.provide(Layer.succeed(GitCore, { listRecentCommits } as unknown as GitCoreShape)),
     Layer.provide(
@@ -147,7 +155,7 @@ function makeProviderTextGenerationTestLayer(
     ),
   );
 
-  return { layer, claude, codex, cursor, droid, opencode, listRecentCommits, execute };
+  return { layer, claude, codex, cursor, droid, opencode, pi, listRecentCommits, execute };
 }
 
 describe("ProviderTextGenerationLive", () => {
@@ -255,12 +263,13 @@ describe("ProviderTextGenerationLive", () => {
     );
   });
   it("blocks generation when the selected provider is disabled", async () => {
+    // Accounts are disabled per provider instance; the fork has no driver-level switch.
     const { layer, codex, cursor, opencode } = makeProviderTextGenerationTestLayer({
-      providers: {
-        codex: { enabled: false },
-        cursor: { enabled: false },
-        droid: { enabled: false },
-        opencode: { enabled: false },
+      providerInstances: {
+        codex: { driver: "codex", enabled: false },
+        cursor: { driver: "cursor", enabled: false },
+        droid: { driver: "droid", enabled: false },
+        opencode: { driver: "opencode", enabled: false },
       },
     });
 
@@ -559,6 +568,65 @@ describe("ProviderTextGenerationLive", () => {
     );
     expect(codex.evaluateAutomationCompletion).not.toHaveBeenCalled();
     expect(opencode.evaluateAutomationCompletion).not.toHaveBeenCalled();
+  });
+
+  it("routes host text tasks through the selected provider unchanged", async () => {
+    const { layer, claude, codex } = makeProviderTextGenerationTestLayer();
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const textGeneration = yield* TextGeneration;
+        return yield* textGeneration.generateTextTask({
+          cwd: "/paper",
+          prompt: "Proofread this.",
+          modelSelection: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+        });
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(result.text).toBe("claude text");
+    expect(claude.generateTextTask).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: "/paper", prompt: "Proofread this." }),
+    );
+    expect(codex.generateTextTask).not.toHaveBeenCalled();
+  });
+
+  it("routes host text tasks on a Pi model to the Pi backend with the instance's options", async () => {
+    const { layer, pi, codex } = makeProviderTextGenerationTestLayer({
+      providers: { pi: { enabled: true } },
+      providerInstances: {
+        pi_endpoint: {
+          driver: "pi",
+          displayName: "Model endpoint",
+          enabled: true,
+          environment: [{ name: "PI_ENDPOINT_KEY", value: "test-key", sensitive: true }],
+          config: { agentDir: "/tmp/pi-endpoint" },
+        },
+      },
+    });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const textGeneration = yield* TextGeneration;
+        return yield* textGeneration.generateTextTask({
+          cwd: "/paper",
+          prompt: "Proofread this.",
+          modelSelection: { provider: "pi", instanceId: "pi_endpoint", model: "endpoint/model" },
+        });
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(result.text).toBe("pi text");
+    expect(pi.generateTextTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "Proofread this.",
+        modelSelection: { provider: "pi", instanceId: "pi_endpoint", model: "endpoint/model" },
+        providerOptions: {
+          pi: { agentDir: "/tmp/pi-endpoint", environment: { PI_ENDPOINT_KEY: "test-key" } },
+        },
+      }),
+    );
+    expect(codex.generateTextTask).not.toHaveBeenCalled();
   });
 
   it("routes text generation by exact provider instance and merges its provider options", async () => {

@@ -2,7 +2,8 @@
 // Purpose: Resolves local preview-file (image/video/PDF) requests without exposing arbitrary files.
 // Layer: Server HTTP utility
 // Exports: local image route constants and allowlisted path resolver
-// Depends on: fs realpath/stat, Codex generated image roots, safe preview extensions
+// Depends on: fs realpath/stat, Codex generated image and tool-result image roots,
+//             safe preview extensions
 
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
@@ -137,6 +138,8 @@ export async function resolveAllowedLocalPreviewFile(input: {
   /** Additional configured Codex homes (per-instance dedicated homes). */
   readonly codexHomePaths?: readonly CodexGeneratedImageHomeCandidate[];
   readonly scratchWorkspacesRoot?: string;
+  /** Server-owned snapshots of images tools returned (provider/toolResultImages.ts). */
+  readonly toolImagesRoot?: string;
   readonly allowAbsoluteLocalPreviewFile?: boolean;
   readonly previewGrant?: string | null;
 }): Promise<ResolvedLocalPreviewFile | null> {
@@ -236,7 +239,11 @@ export async function resolveAllowedLocalPreviewFile(input: {
       },
     ),
   ).then((roots) => roots.filter((root): root is string => root !== null));
-  return generatedImagesRoots.some((root) => isPathInside(realFilePath, root)) ? resolved : null;
+  const toolImagesRoot = await realpathOrNull(input.toolImagesRoot);
+  const allowed =
+    generatedImagesRoots.some((root) => isPathInside(realFilePath, root)) ||
+    (toolImagesRoot !== null && isPathInside(realFilePath, toolImagesRoot));
+  return allowed ? resolved : null;
 }
 
 // A relative reference may recover inside its workspace or registered Git

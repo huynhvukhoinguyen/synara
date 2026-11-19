@@ -28,19 +28,22 @@ describe("summarizeProviderAccounts", () => {
   it("counts enabled accounts of listed agents that still need a sign-in", () => {
     const settings = {
       ...defaults,
-      disabledProviders: ["grok" as const],
       providerInstances: {
         codex_work: { driver: "codex", displayName: "Work", enabled: true },
         codex_off: { driver: "codex", displayName: "Off", enabled: false },
         grok_work: { driver: "grok", displayName: "Grok work", enabled: true },
       },
     };
-    const summary = summarizeProviderAccounts(settings, [
-      status("codex", "codex"),
-      status("codex_work", "codex", { authStatus: "unauthenticated" }),
-      status("codex_off", "codex", { authStatus: "unauthenticated" }),
-      status("grok_work", "grok", { authStatus: "unauthenticated" }),
-    ]);
+    const summary = summarizeProviderAccounts(
+      settings,
+      [
+        status("codex", "codex"),
+        status("codex_work", "codex", { authStatus: "unauthenticated" }),
+        status("codex_off", "codex", { authStatus: "unauthenticated" }),
+        status("grok_work", "grok", { authStatus: "unauthenticated" }),
+      ],
+      ["grok"],
+    );
     expect(summary.needingSignIn).toBe(1);
     const ids = summary.searchAccounts.map((account) => account.instanceId);
     expect(ids).toContain("codex_work");

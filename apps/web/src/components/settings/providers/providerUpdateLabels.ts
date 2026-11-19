@@ -32,7 +32,9 @@ export function providerUpdateStatusLabel(provider: ServerProviderStatus): strin
       : t("settings:latest", { value0: latestVersion });
   }
   const currentVersion = formatProviderVersion(provider.version);
-  return currentVersion ? t("settings:current", { value0: currentVersion }) : null;
+  if (currentVersion) return t("settings:current", { value0: currentVersion });
+  // Pi runs on its SDK, so it has no CLI version to show.
+  return provider.provider === "pi" && provider.available ? t("settings:installed") : null;
 }
 
 export function providerUpdateFailureMessage(

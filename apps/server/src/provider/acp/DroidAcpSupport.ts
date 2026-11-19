@@ -48,6 +48,8 @@ export interface DroidAcpRuntimeInput extends Omit<
 > {
   readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly droidSettings: DroidAcpRuntimeSettings | null | undefined;
+  /** Background discovery must never open Factory's device-pairing login. */
+  readonly allowDevicePairing?: boolean;
 }
 
 export interface DroidAcpModelSelectionErrorContext {
@@ -69,6 +71,22 @@ const DROID_PLAN_MODE_ID = "spec";
 const DROID_API_KEY_AUTH_METHOD_ID = "factory-api-key";
 const DROID_DEVICE_PAIRING_AUTH_METHOD_ID = "device-pairing";
 const DROID_API_KEY_ENV_KEYS = ["FACTORY_API_KEY"] as const;
+
+/**
+ * True when Droid refused to reopen a session because it no longer has it.
+ *
+ * Droid answers `session/resume` and `session/load` this way when the session
+ * files are gone, which includes the "empty draft" sessions it deletes when a
+ * session that never received a message is closed (also when its ACP process
+ * exits).
+ */
+export function isDroidUnknownSessionError(error: unknown): error is AcpErrors.AcpRequestError {
+  return (
+    error instanceof AcpErrors.AcpRequestError &&
+    error.code === -32602 &&
+    /\bunknown session identifier\b/iu.test(error.errorMessage)
+  );
+}
 
 export function getDroidApiKeyEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
   for (const key of DROID_API_KEY_ENV_KEYS) {
@@ -149,13 +167,14 @@ export function buildDroidAcpSpawnInput(
 export const resolveDroidAcpAuthMethodId = (
   initializeResult: Acp.InitializeResponse,
   environment: NodeJS.ProcessEnv = process.env,
+  allowDevicePairing = true,
 ): Effect.Effect<string, AcpErrors.AcpError> =>
   Effect.gen(function* () {
     const authMethodIds = availableAuthMethodIds(initializeResult);
     if (hasDroidApiKeyEnv(environment) && authMethodIds.has(DROID_API_KEY_AUTH_METHOD_ID)) {
       return DROID_API_KEY_AUTH_METHOD_ID;
     }
-    if (authMethodIds.has(DROID_DEVICE_PAIRING_AUTH_METHOD_ID)) {
+    if (allowDevicePairing && authMethodIds.has(DROID_DEVICE_PAIRING_AUTH_METHOD_ID)) {
       return DROID_DEVICE_PAIRING_AUTH_METHOD_ID;
     }
     return yield* new AcpErrors.AcpRequestError({
@@ -178,10 +197,14 @@ export const makeDroidAcpRuntime = (
         spawn: buildDroidAcpSpawnInput(input.droidSettings, input.cwd),
         authPolicy: "on-demand",
         resolveAuthMethodId: (initializeResult) =>
-          resolveDroidAcpAuthMethodId(initializeResult, {
-            ...process.env,
-            ...(input.droidSettings?.environment ?? {}),
-          }),
+          resolveDroidAcpAuthMethodId(
+            initializeResult,
+            {
+              ...process.env,
+              ...(input.droidSettings?.environment ?? {}),
+            },
+            input.allowDevicePairing,
+          ),
         authenticateMeta: { headless: true },
       }).pipe(
         Layer.provide(

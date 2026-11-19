@@ -167,7 +167,8 @@ function ProviderSignInAttempt(
     if (checkInFlight.current) return checkInFlight.current;
     setChecking(true);
     const check = (async () => {
-      const statuses = await refreshRef.current({ silent: true });
+      // After a sign-in the account may differ: an explicit recheck.
+      const statuses = await refreshRef.current({ silent: true, explicit: true });
       if (!alive.current) return;
       const status = statuses?.find((entry) => (entry.instanceId ?? entry.provider) === instanceId);
       // An account can be signed in and still have no usable models.
@@ -215,7 +216,7 @@ function ProviderSignInAttempt(
           .then(() => {
             void queryClient.invalidateQueries({ queryKey: serverQueryKeys.settings() });
             void queryClient.invalidateQueries({ queryKey: serverQueryKeys.allProviderUsage() });
-            void refreshRef.current({ silent: true });
+            void refreshRef.current({ silent: true, explicit: true });
           });
       });
     };
@@ -342,14 +343,14 @@ function ProviderSignInAttempt(
     failed: t("settings:signInFlow_titleFailed"),
   }[phase];
   const body = {
-    waiting: interactive ? method.instructions : t("settings:signInFlow_bodyBrowser"),
+    waiting: interactive ? method.instructions : t("lattice:signInFlow_bodyBrowser"),
     connected: account
       ? t("settings:signInFlow_bodyConnectedAs", { account, provider: accountLabel })
       : t("settings:signInFlow_bodyConnected", { provider: accountLabel }),
     stalled: t("settings:signInFlow_bodyStalled"),
     ended: t("settings:signInFlow_bodyEnded", { provider: accountLabel }),
-    unverified: t("settings:signInFlow_bodyUnverified", { provider: accountLabel }),
-    failed: t("settings:signInFlow_bodyFailed", { provider: accountLabel }),
+    unverified: t("lattice:signInFlow_bodyUnverified", { provider: accountLabel }),
+    failed: t("lattice:signInFlow_bodyFailed", { provider: accountLabel }),
   }[phase];
   const linkTone =
     phase === "connected"
@@ -456,7 +457,7 @@ function ProviderSignInAttempt(
             </SignInStep>
             <SignInStep state="upcoming" index={3}>
               <span className="flex-1 truncate">
-                {t("settings:signInFlow_stepReady", { provider: accountLabel })}
+                {t("lattice:signInFlow_stepReady", { provider: accountLabel })}
               </span>
             </SignInStep>
           </ol>

@@ -16,7 +16,7 @@ import type { ProviderKind } from "@synara/contracts";
 import type { ReactNode } from "react";
 
 import type { AppSettings } from "~/appSettings";
-import { VISIBLE_PROVIDER_DESCRIPTORS } from "~/betaFeatures";
+import { isBetaFeatureOn, VISIBLE_PROVIDER_DESCRIPTORS } from "~/betaFeatures";
 import type { t } from "~/i18n";
 import { Translation } from "~/i18n/Translation";
 
@@ -355,25 +355,10 @@ export const PROVIDER_INSTALL_SETTINGS: readonly ProviderInstallSettings[] = [
   },
   {
     provider: "pi",
-    docs: [
-      { label: "settings:providers_docInstall", href: "https://pi.dev/docs/latest" },
-      { label: "computer:providerUpdates_update", href: "https://pi.dev/docs/latest/settings" },
-      { label: "settings:providers_docConfig", href: "https://pi.dev/docs/latest/settings" },
-    ],
+    // Lattice installs Pi on demand and runs it through its SDK, so there is no Pi CLI
+    // to install, update or point at.
+    docs: [{ label: "settings:providers_docConfig", href: "https://pi.dev/docs/latest/settings" }],
     fields: [
-      {
-        kind: "text",
-        settingsKey: "piBinaryPath",
-        label: "settings:piBinaryPath",
-        placeholder: "settings:piBinaryPath",
-        description: () => (
-          <Translation
-            message="settings:binaryPathDescription"
-            values={{ command: "pi" }}
-            components={{ command: <code /> }}
-          />
-        ),
-      },
       {
         kind: "text",
         settingsKey: "piAgentDir",
@@ -417,6 +402,11 @@ export const PROVIDER_INSTALL_SETTINGS: readonly ProviderInstallSettings[] = [
     ],
   },
 ];
+
+// Beta-only providers keep their stored install fields but their install row is hidden.
+export const VISIBLE_PROVIDER_INSTALL_SETTINGS = PROVIDER_INSTALL_SETTINGS.filter((config) =>
+  isBetaFeatureOn(config.provider),
+);
 
 function isProviderInstallFieldDirty(
   field: ProviderInstallField,

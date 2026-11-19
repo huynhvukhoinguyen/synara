@@ -24,6 +24,7 @@ import {
   type DiffRenderMode,
   DiffRenderModeSchema,
 } from "~/diffRenderMode";
+import { isSynaraEmbedMode } from "~/embedMode";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useTranslation } from "~/i18n";
 
@@ -182,15 +183,19 @@ export function ChatsSettingsView(binding: AppSettingsBinding) {
           ariaLabel="settings:showEffortSliderInTheComposer"
         />
 
-        <BooleanSettingRow
-          {...binding}
-          id="setting-composer-suggestions"
-          settingKey="showComposerSuggestions"
-          title="settings:showSuggestions"
-          description="settings:afterAReplyFinishesShowAPredictedNextMessage"
-          resetLabel="settings:showSuggestions2"
-          ariaLabel="settings:showPredictedNextMessagesInTheComposer"
-        />
+        {/* Lattice's Agent never predicts a next message (the server reports no
+            composerPredictions capability there), so the embed has no toggle for it. */}
+        {isSynaraEmbedMode() ? null : (
+          <BooleanSettingRow
+            {...binding}
+            id="setting-composer-suggestions"
+            settingKey="showComposerSuggestions"
+            title="settings:showSuggestions"
+            description="settings:afterAReplyFinishesShowAPredictedNextMessage"
+            resetLabel="settings:showSuggestions2"
+            ariaLabel="settings:showPredictedNextMessagesInTheComposer"
+          />
+        )}
       </SettingsSection>
 
       <SettingsSection title="chat:review">

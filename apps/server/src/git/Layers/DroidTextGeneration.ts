@@ -25,6 +25,7 @@ import {
   buildCommitMessagePrompt,
   buildComposerPredictionPrompt,
   buildDiffSummaryPrompt,
+  buildTextTaskPrompt,
   buildPrContentPrompt,
   buildThreadRecapPrompt,
   buildProjectDigestPrompt,
@@ -316,6 +317,16 @@ const makeDroidTextGeneration = Effect.gen(function* () {
         );
       },
     ),
+    generateTextTask: Effect.fn("DroidTextGeneration.generateTextTask")(function* (
+      input: OperationInputOf<"generateTextTask">,
+    ) {
+      return yield* runDroidAcpOperation(
+        "generateTextTask",
+        input,
+        (input) => buildTextTaskPrompt({ prompt: input.prompt }),
+        (generated) => ({ text: generated.text.trim() }),
+      );
+    }),
   };
 });
 

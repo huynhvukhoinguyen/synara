@@ -15,7 +15,12 @@ import { verifyEditorLanguageRuntime } from "./editor/runtimeSmoke";
 
 import { loadAcpSdk } from "./provider/acp/AcpSdk.ts";
 import { loadClaudeAgentSdk } from "./provider/claudeAgentSdk.ts";
-import { resolvePiInstallation } from "./provider/piSdkImports.ts";
+import {
+  loadProviderRuntimeModule,
+  providerRuntimeAvailability,
+  ProviderRuntimeMissingError,
+  refreshProviderRuntimeAvailability,
+} from "./provider/providerRuntimes.ts";
 
 // Exercise the actual sibling entry and its owned child, not an in-process import.
 async function verifyOfflineCompactorRuntime(): Promise<void> {
@@ -98,34 +103,41 @@ if (!piOnly) {
   await loadAcpSdk();
   await loadClaudeAgentSdk();
 }
-// An import alone misses Pi's lazy OpenAI client and its transitive peers.
-// Block real traffic even if the SDK stops honoring its supplied fetch.
-const require = createRequire(import.meta.url);
-const http = require("node:http") as typeof import("node:http");
-const https = require("node:https") as typeof import("node:https");
-const net = require("node:net") as typeof import("node:net");
-const tls = require("node:tls") as typeof import("node:tls");
-const originalTransport = {
-  fetch: globalThis.fetch,
-  httpRequest: http.request,
-  httpGet: http.get,
-  httpsRequest: https.request,
-  httpsGet: https.get,
-  socketConnect: net.Socket.prototype.connect,
-  tlsConnect: tls.connect,
-};
-const denyNetwork = (): never => {
-  throw new Error("Real network access is forbidden in the Pi runtime smoke.");
-};
-// Both published targets must omit Pi. Exercise the actual resolver without
-// inheriting a runner's installed tools; the separate installed mode uses PATH.
-assert.throws(() => import.meta.resolve("@earendil-works/pi-coding-agent"), {
-  code: "ERR_MODULE_NOT_FOUND",
-});
-if (smokeMode !== "pi-installed") {
-  await assert.rejects(() => resolvePiInstallation({ env: { PATH: "" } }), /Pi is not installed/i);
-  console.log("Pi SDK omitted and missing CLI recognized.");
-} else {
+// Pi and OpenCode are optional runtimes: a full install loads them here, while a slim
+// host that leaves them out must report them as installable, not crash.
+await refreshProviderRuntimeAvailability();
+for (const runtime of ["pi", "opencode"] as const) {
+  const availability = providerRuntimeAvailability(runtime);
+  const specifier =
+    runtime === "pi" ? "@earendil-works/pi-coding-agent" : ("@opencode-ai/sdk/v2" as const);
+  if (availability === "missing") {
+    await assert.rejects(loadProviderRuntimeModule(specifier), ProviderRuntimeMissingError);
+  } else {
+    await loadProviderRuntimeModule(specifier);
+  }
+  console.log(`Provider runtime ${runtime}: ${availability}.`);
+}
+// Where Pi is installed, also exercise its lazy OpenAI client offline (upstream's smoke).
+if (providerRuntimeAvailability("pi") !== "missing") {
+  // An import alone misses Pi's lazy OpenAI client and its transitive peers.
+  // Block real traffic even if the SDK stops honoring its supplied fetch.
+  const require = createRequire(import.meta.url);
+  const http = require("node:http") as typeof import("node:http");
+  const https = require("node:https") as typeof import("node:https");
+  const net = require("node:net") as typeof import("node:net");
+  const tls = require("node:tls") as typeof import("node:tls");
+  const originalTransport = {
+    fetch: globalThis.fetch,
+    httpRequest: http.request,
+    httpGet: http.get,
+    httpsRequest: https.request,
+    httpsGet: https.get,
+    socketConnect: net.Socket.prototype.connect,
+    tlsConnect: tls.connect,
+  };
+  const denyNetwork = (): never => {
+    throw new Error("Real network access is forbidden in the Pi runtime smoke.");
+  };
   const root = await mkdtemp(join(tmpdir(), "synara-pi-runtime-smoke-"));
   try {
     globalThis.fetch = Object.assign(denyNetwork, { preconnect: denyNetwork });
@@ -137,10 +149,7 @@ if (smokeMode !== "pi-installed") {
     tls.connect = denyNetwork;
     syncBuiltinESMExports();
 
-    const installation = await resolvePiInstallation();
-    const { ModelRuntime } = await installation.importPackage<
-      typeof import("@earendil-works/pi-coding-agent")
-    >("@earendil-works/pi-coding-agent");
+    const { ModelRuntime } = await loadProviderRuntimeModule("@earendil-works/pi-coding-agent");
     const token = "synthetic-packaged-smoke-token";
     const authPath = join(root, "auth.json");
     await writeFile(
@@ -165,7 +174,7 @@ if (smokeMode !== "pi-installed") {
       refreshOnCreate: false,
     });
     const model = runtime.getModel("openai", "gpt-5.4");
-    assert(model, "Missing OpenAI smoke model in the installed Pi SDK.");
+    assert(model, "Missing packaged OpenAI smoke model.");
     let requests = 0;
     const sentinel = "synthetic packaged smoke stop";
     const completed = await runtime.complete(
@@ -208,10 +217,10 @@ if (smokeMode !== "pi-installed") {
         ),
       },
     );
-    assert.equal(requests, 1, "The Pi OpenAI client must dispatch once without retrying.");
+    assert.equal(requests, 1, "The packaged OpenAI client must dispatch once without retrying.");
     assert(
       completed.stopReason === "error" && completed.errorMessage?.includes(sentinel),
-      "The Pi OpenAI client must propagate the synthetic response.",
+      "The packaged OpenAI client must propagate the synthetic response.",
     );
   } finally {
     globalThis.fetch = originalTransport.fetch;
@@ -224,7 +233,6 @@ if (smokeMode !== "pi-installed") {
     syncBuiltinESMExports();
     await rm(root, { recursive: true, force: true });
   }
-  console.log("Pi SDK loaded from the installed CLI and passed offline runtime verification.");
 }
 if (piOnly) process.exit(0);
 

@@ -1,8 +1,3 @@
-// FILE: MessagesTimeline.tsx
-// Purpose: Renders the chat transcript rows and lets LegendList own scrolling/follow behavior.
-// Layer: Web chat presentation component
-// Exports: MessagesTimeline
-
 import {
   type EditorId,
   type HubWorkItem,
@@ -76,6 +71,7 @@ import {
   Undo2Icon,
   WorktreeIcon,
 } from "~/lib/icons";
+import { createImeKeyGuard } from "~/lib/imeComposition";
 import { pinActionLabel } from "~/lib/pin";
 import { syncAnimationsToTimelineOrigin } from "~/lib/animationTimelineSync";
 import { useStableCallback } from "~/hooks/useStableCallback";
@@ -97,6 +93,9 @@ import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImage
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { InlineVisual } from "./InlineVisual";
 import { InlineVisualEmbedContext } from "./inlineVisualEmbedContext";
+import { ThreadImageSequenceContext } from "./threadImageSequenceContext";
+import { SettledTurnImageStrip } from "./WorkEntryImageStrip";
+import { collectThreadImageSequence, threadImageSequencesEqual } from "../../lib/workEntryImages";
 import { DiffStatLabel } from "./DiffStatLabel";
 import { ReviewChangesButton } from "./ReviewChangesButton";
 import { FileEntryIcon } from "./FileEntryIcon";
@@ -197,6 +196,8 @@ import {
   disclosureContentClassName,
 } from "~/lib/disclosureMotion";
 import { getAppTypographyScale } from "../../lib/appTypography";
+import { splitCodexFollowUps } from "../../lib/codexFollowUps";
+import { CodexFollowUpChips } from "./CodexFollowUpChips";
 import {
   USER_MESSAGE_COLLAPSED_FADE_LINES,
   USER_MESSAGE_COLLAPSED_MAX_LINES,
@@ -216,7 +217,7 @@ import {
   type ThreadFindHighlight,
   type ThreadFindMatch,
 } from "./threadFind.logic";
-import { useTranslation } from "~/i18n";
+import { t, useTranslation } from "~/i18n";
 
 const MAX_VISIBLE_INLINE_TOOL_ENTRIES = 4;
 const EMPTY_EDITOR_KEYBINDINGS: ResolvedKeybindingsConfig = [];
@@ -224,9 +225,9 @@ const EMPTY_AVAILABLE_EDITORS: ReadonlyArray<EditorId> = [];
 // Changed-files list in the per-turn card is capped so large turns stay compact;
 // the rest are revealed via an inline "Show more" row.
 const MAX_VISIBLE_CHANGED_FILES = 5;
-// The composer overlaps the transcript by design, so the list needs extra tail
-// space beyond the overlap to keep final cards from sitting flush against it.
-const BOTTOM_CONTENT_INSET_PX = 64;
+// The measured composer inset already clears its height minus the 20px tuck.
+// This leaves about 24px between the final row and the composer at rest.
+const BOTTOM_CONTENT_INSET_PX = 44;
 const MESSAGE_HOVER_REVEAL_CLASS_NAME =
   "opacity-0 transition-opacity pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
 // How long a jumped-to message keeps its highlight tint before fading back out.
@@ -287,10 +288,26 @@ const USER_TURN_MARKER_PRESENTATION: Record<
   UserTurnMarkerKind,
   { readonly Icon: LucideIcon; readonly label: string }
 > = {
-  automation: { Icon: ClockIcon, label: "Sent via Automation" },
-  agent: { Icon: BotIcon, label: "Sent by agent" },
-  steer: { Icon: SteerIcon, label: "Steering conversation" },
+  automation: { Icon: ClockIcon, label: "chat:timeline_sentViaAutomation" },
+  agent: { Icon: BotIcon, label: "chat:sentByAgent" },
+  steer: { Icon: SteerIcon, label: "chat:timeline_steeringConversation" },
 };
+
+/** The working indicator's label set is fixed (see `WorkingLabel`), so each maps to a message. */
+function localizeWorkingLabel(translate: typeof t, label: WorkingLabel): string {
+  switch (label) {
+    case "Loading":
+      return translate("chat:spinner_loading");
+    case "Thinking":
+      return translate("chat:timeline_thinking");
+    case "Checking message delivery…":
+      return translate("lattice:checkingMessageDelivery");
+    default: {
+      const provider = /^Starting (.+)…$/u.exec(label)?.[1];
+      return provider ? translate("lattice:starting", { provider }) : label;
+    }
+  }
+}
 
 function UserDispatchModeChip({
   dispatchMode,
@@ -315,7 +332,7 @@ function UserDispatchModeChip({
       )}
     >
       <Icon className="size-3 shrink-0 text-muted-foreground/75" />
-      <span>{label}</span>
+      <span>{t(label)}</span>
     </div>
   );
 }
@@ -357,14 +374,9 @@ function WorktreeSetupCard({
   onResolve,
 }: {
   steps: ReadonlyArray<WorktreeSetupStep>;
-  pendingAction?: WorktreeSetupResolutionAction | null | undefined;
-  onResolve?: ((action: WorktreeSetupResolutionAction) => void) | undefined;
+  pendingAction?: WorktreeSetupResolutionAction | null;
+  onResolve?: (action: WorktreeSetupResolutionAction) => void;
 }) {
-  const { t } = useTranslation();
-
-  // The send pipeline only honors a resolution at checkpoints before the turn
-  // dispatch, so hide the actions once "Starting session" is underway (or the
-  // setup already failed) rather than offering a cancel that can no longer win.
   const canResolve =
     onResolve !== undefined &&
     steps.every((step) => step.status !== "error") &&
@@ -454,9 +466,7 @@ interface MessagesTimelineProps {
   activeTurnStartedAt: string | null;
   /** Transient "New worktree" setup progress; rendered as an ephemeral step card at the tail. */
   worktreeSetup?: WorktreeSetupSnapshot | null;
-  /** Action already chosen from the worktree setup card; disables its buttons while it applies. */
   worktreeSetupPendingAction?: WorktreeSetupResolutionAction | null;
-  /** Resolve the in-flight worktree preparation (cancel the send or fall back to the local checkout). */
   onResolveWorktreeSetup?: (action: WorktreeSetupResolutionAction) => void;
   followLiveOutput?: boolean;
   /** Normal sends ease into their anchor independently of end-follow ownership. */
@@ -522,6 +532,8 @@ interface MessagesTimelineProps {
   computerControlEnabled?: boolean;
   /** Switch computer control on from a "computer control denied" transcript card. */
   onEnableComputerControl?: () => void;
+  /** Writes a follow-up the latest reply suggested into the composer. */
+  onSelectFollowUp?: (prompt: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
   onUndoTurnFiles?: (turnCounts: readonly number[]) => void;
@@ -637,6 +649,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenAutomation,
   computerControlEnabled,
   onEnableComputerControl,
+  onSelectFollowUp,
   revertTurnCountByUserMessageId,
   onRevertUserMessage: onRevertUserMessageProp,
   onUndoTurnFiles: onUndoTurnFilesProp,
@@ -681,7 +694,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // an `AssignmentPattern` in the parameter list makes React Compiler bail out on the
   // entire component (silently, since `panicThreshold` is unset), which would drop
   // memoization for the whole transcript. See MessagesTimeline.compiler.test.ts.
-  const workingLabel = workingLabelProp ?? t("chat:timeline_thinking");
+  const workingLabel = workingLabelProp ?? "Thinking";
   const workingIcon =
     workingLabel === "Thinking"
       ? ThinkingIcon
@@ -884,6 +897,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     contentChangeSignal: timelineEntries,
     messageChangeSignal: messageChangeSignalProp ?? timelineEntries,
     animateAnchorSlide: animateTailAnchorSlide ?? !followLiveOutput,
+    holdWhileTurnInProgress: activeTurnInProgress,
   });
 
   const presentedWorktreeSetup = useWorktreeSetupPresentation(worktreeSetup);
@@ -986,16 +1000,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       return;
     }
     const style = getComputedStyle(node);
-    // Only the *class-based* padding belongs here. The composer inset is applied through
-    // `style.paddingBottom`, which the list already reads and reserves for itself —
-    // counting it twice would push the anchored message a composer-height off the top.
-    const bottomPadding = Math.max(
-      0,
-      (Number.parseFloat(style.paddingBottom) || 0) - (contentInsetBottomPx ?? 0),
-    );
-    const inset = (Number.parseFloat(style.paddingTop) || 0) + bottomPadding;
+    // LegendList already subtracts the inline composer inset from its reserve.
+    // Its DOM can still carry the previous inset in this layout pass, so don't
+    // derive CSS padding by subtracting the new prop from that stale measurement.
+    const inset =
+      (Number.parseFloat(style.paddingTop) || 0) +
+      (contentInsetBottomPx ? 0 : Number.parseFloat(style.paddingBottom) || 0);
     setAnchorVerticalInsetPx((current) => (Math.abs(current - inset) > 0.5 ? inset : current));
-  }, [contentInsetBottomPx, resolvedListRef, tailAnchorMessageId]);
+  }, [resolvedListRef, tailAnchorMessageId, contentInsetBottomPx]);
   const anchoredEndSpace = useMemo(
     () =>
       tailAnchorRowIndex < 0
@@ -1006,16 +1018,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           },
     [anchorVerticalInsetPx, tailAnchorRowIndex],
   );
-  // `anchoredEndSpaceSize` is an internal LegendList signal used only to make
-  // the native reserve observable to the browser regression harness. Its
-  // public listener union deliberately omits it, so narrow the internal hook
-  // locally rather than weakening the ref type throughout the transcript.
+  // Surface the live reserve for tests/diagnostics without re-rendering. The
+  // signal (unlike `onSizeChanged`) also reports the collapse to zero after the
+  // anchor is cleared, when no config object exists to receive a callback.
   useEffect(() => {
     const state = resolvedListRef.current?.getState?.();
-    const listenForAnchoredEndSpace = state?.listen as
-      | ((listenerType: "anchoredEndSpaceSize", callback: (size: number) => void) => () => void)
-      | undefined;
-    return listenForAnchoredEndSpace?.("anchoredEndSpaceSize", (size) => {
+    return state?.listen?.("anchoredEndSpaceSize", (size) => {
       timelineRootRef.current?.setAttribute("data-anchored-end-space", String(Math.round(size)));
     });
   }, [resolvedListRef]);
@@ -1027,6 +1035,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       if (row.kind === "message" && row.message.role === "user") {
         return row.message.id;
       }
+    }
+    return null;
+  }, [rows]);
+  // Only the reply that ends the transcript offers its follow-ups: once the
+  // conversation moves on, older suggestions no longer follow from it.
+  const lastMessageId = useMemo(() => {
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const row = rows[index]!;
+      if (row.kind === "message") return row.message.id;
     }
     return null;
   }, [rows]);
@@ -1307,6 +1324,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   useLayoutEffect(() => {
     userMessageAnchorsRef.current = userMessageAnchors;
   }, [userMessageAnchors]);
+  const scrollbarIdleTimerRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (scrollbarIdleTimerRef.current !== null) {
+        window.clearTimeout(scrollbarIdleTimerRef.current);
+      }
+    },
+    [],
+  );
   const emitTrailHighlightsForViewport = useCallback(
     (topRowIndex: number, bottomRowIndex: number) => {
       if (!onTrailHighlightsChange || !Number.isFinite(topRowIndex)) {
@@ -1334,6 +1360,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, []);
   const handleListScroll = useCallback<NonNullable<MessagesTimelineProps["onMessagesScroll"]>>(
     (event) => {
+      const scrollElement = (event as unknown as { currentTarget?: EventTarget | null })
+        .currentTarget;
+      if (scrollElement instanceof HTMLElement) {
+        scrollElement.dataset.scrolling = "true";
+        if (scrollbarIdleTimerRef.current !== null) {
+          window.clearTimeout(scrollbarIdleTimerRef.current);
+        }
+        scrollbarIdleTimerRef.current = window.setTimeout(() => {
+          delete scrollElement.dataset.scrolling;
+          scrollbarIdleTimerRef.current = null;
+        }, 180);
+      }
       onMessagesScroll?.(event);
       const state = readLegendListState(resolvedListRef);
       if (!state) {
@@ -1436,6 +1474,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [timelineEntries],
   );
   const inlineVisualOwners = useStableValue(derivedInlineVisualOwners, mapsEqual);
+  // Only image thumbnails read this, through context, so a new snapshot re-renders
+  // them alone; identity stays stable while the sequence is unchanged.
+  const derivedThreadImageSequence = useMemo(
+    () =>
+      collectThreadImageSequence(
+        timelineEntries.flatMap((entry) => (entry.kind === "work" ? [entry.entry] : [])),
+      ),
+    [timelineEntries],
+  );
+  const threadImageSequence = useStableValue(derivedThreadImageSequence, threadImageSequencesEqual);
   // Replies place visuals in their text with an embed fence; the markdown asks
   // for the visual by id and draws it right there, as part of the answer.
   const renderInlineVisual = useCallback(
@@ -1696,6 +1744,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 {row.turnHeader.resumedBy?.length ? null : (
                   <div className="h-px w-full bg-border" />
                 )}
+                {/* Expanded, the rows carry their own thumbnails. */}
+                {!isCollapsedWorkExpanded ? (
+                  <SettledTurnImageStrip
+                    entries={collapsedTurnItems!.flatMap((item) =>
+                      item.kind === "work" ? [item.entry] : [],
+                    )}
+                    cwd={markdownCwd}
+                    threadId={threadId}
+                    onImageExpand={onImageExpand}
+                  />
+                ) : null}
               </Collapsible>
             ) : showsHeaderWithoutWork ? (
               <TurnHeaderLine
@@ -1772,6 +1831,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               <ThreadErrorBanner
                 title={t("chat:taskInterrupted")}
                 error={entry.turnFailure.message}
+                {...(entry.turnFailure.nextStep ? { nextStep: entry.turnFailure.nextStep } : {})}
                 {...(entry.turnId && entry.turnId === recoverableTurnId && onContinueFailedTurn
                   ? {
                       onContinue: () => {
@@ -2040,6 +2100,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           const canRevertAgentWork = typeof row.revertTurnCount === "number";
           const isEditingThisMessage = editingUserMessageId === row.message.id;
           const isSubmittingThisEdit = submittingEditedUserMessageId === row.message.id;
+          // The edit affordance can go stale while the composer is open (a newer
+          // message lands, the turn's rollback metadata disappears). Keep the
+          // draft on screen but block a send that would only bounce off the
+          // validators; skip during submit, when the rollback itself reshuffles
+          // the thread and would flash the hint.
+          const editSubmitBlocked =
+            isEditingThisMessage &&
+            !isSubmittingThisEdit &&
+            row.message.id !== latestEditableUserMessageId;
           const showEditUserMessage =
             Boolean(onEditUserMessage) &&
             row.message.id === latestEditableUserMessageId &&
@@ -2176,6 +2245,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                       key={row.message.id}
                       initialValue={displayedUserMessage.copyText}
                       disabled={isSubmittingThisEdit || isRevertingCheckpoint}
+                      submitBlockedHint={
+                        editSubmitBlocked ? t("lattice:theConversationHasMovedOnSoThis") : null
+                      }
                       allowEmpty={renderedBrowserAnnotations.length > 0}
                       chatTypographyStyle={userMessageTypographyStyle}
                       borderClassName={userMessageBubbleBorderClass}
@@ -2298,7 +2370,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       {row.kind === "message" &&
         row.message.role === "assistant" &&
         (() => {
-          const messageText = resolveAssistantMessageDisplayText(row);
+          const displayText = resolveAssistantMessageDisplayText(row);
+          // Codex's suggested next prompts become chips; their directive
+          // syntax never reaches the markdown, the copy text or a find match.
+          const codexFollowUps =
+            displayText === null
+              ? null
+              : splitCodexFollowUps(displayText, Boolean(row.message.streaming));
+          const messageText = codexFollowUps?.text ?? null;
           const buildWorkDisplay = (workEntries: WorkLogEntry[], workGroupId: string | null) => {
             const displayEntries = workEntries.filter((entry) => !entry.synaraThreadCreation);
             const toolEntries = displayEntries.filter((entry) => entry.tone === "tool");
@@ -2358,7 +2437,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             ? MESSAGE_HOVER_REVEAL_CLASS_NAME
             : undefined;
           const assistantCopyState = resolveAssistantMessageCopyState({
-            text: row.assistantReplyCopyText ?? row.message.text ?? null,
+            text: row.assistantReplyCopyText
+              ? splitCodexFollowUps(row.assistantReplyCopyText, false).text
+              : row.message.text
+                ? (codexFollowUps?.text ?? row.message.text)
+                : null,
             showCopyButton: row.showAssistantCopyButton,
             streaming: row.assistantCopyStreaming,
           });
@@ -2670,6 +2753,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     </InlineVisualEmbedContext.Provider>
                   </div>
                 ) : null}
+                {onSelectFollowUp &&
+                isTerminalAssistantMessage &&
+                row.message.id === lastMessageId &&
+                codexFollowUps &&
+                codexFollowUps.followUps.length > 0 ? (
+                  <CodexFollowUpChips
+                    followUps={codexFollowUps.followUps}
+                    onSelect={onSelectFollowUp}
+                  />
+                ) : null}
                 {conversationOnly ? null : renderWorkDisplay(inlineWorkDisplay, "inline")}
                 {!conversationOnly && inlineEditedFilesFromTurnSummary.length > 0 && (
                   <div className="mt-2.5 space-y-0.5">
@@ -2781,10 +2874,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     (sum, file) => sum + (file.deletions ?? 0),
                     0,
                   );
-                  const editedFilesLabel = t("chat:edited2", {
-                    value0: checkpointFiles.length,
-                    value1: pluralize(checkpointFiles.length, "file"),
-                  });
+                  const editedFilesLabel =
+                    checkpointFiles.length === 1
+                      ? t("lattice:edited1File")
+                      : t("lattice:editedFiles", { count: checkpointFiles.length });
                   const visibleCheckpointFileCount =
                     collapsibleHiddenRowCount(checkpointFiles.length, MAX_VISIBLE_CHANGED_FILES) > 0
                       ? MAX_VISIBLE_CHANGED_FILES
@@ -2911,10 +3004,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                             <span>
                               {fileListExpanded
                                 ? t("workspace:timeline_showLess")
-                                : t("chat:showMore2", {
-                                    value0: overflowCheckpointFiles.length,
-                                    value1: pluralize(overflowCheckpointFiles.length, "file"),
-                                  })}
+                                : overflowCheckpointFiles.length === 1
+                                  ? t("lattice:show1MoreFile")
+                                  : t("lattice:showMoreFiles", {
+                                      count: overflowCheckpointFiles.length,
+                                    })}
                             </span>
                           </button>
                         ) : null}
@@ -3098,7 +3192,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           <span aria-hidden="true" className="flex shrink-0">
             {renderWorkEntryIcon(workingIcon, MESSAGE_ACTION_ICON_CLASS_NAME)}
           </span>
-          <span>{workingLabel}</span>
+          <span>{localizeWorkingLabel(t, workingLabel)}</span>
         </div>
       )}
 
@@ -3108,7 +3202,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             <WorktreeSetupCard
               steps={row.steps}
               pendingAction={worktreeSetupPendingAction}
-              onResolve={onResolveWorktreeSetup}
+              {...(onResolveWorktreeSetup ? { onResolve: onResolveWorktreeSetup } : {})}
             />
           </div>
         </DisclosureRegion>
@@ -3141,6 +3235,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       firstUserMessageId,
       highlightedMessageId,
       lastLiveWorkGroupId,
+      lastMessageId,
       pinnedMessageIds,
       settledTurnCollapseTransitions,
       submittingEditedUserMessageId,
@@ -3163,6 +3258,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       firstUserMessageId,
       highlightedMessageId,
       lastLiveWorkGroupId,
+      lastMessageId,
       pinnedMessageIds,
       settledTurnCollapseTransitions,
       submittingEditedUserMessageId,
@@ -3189,73 +3285,76 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }
 
   return (
-    <InlineVisualEmbedContext.Provider value={null}>
-      <div ref={timelineRootRef} className="contents" data-messages-timeline-root="true">
-        <LegendList<MessagesTimelineRow>
-          ref={resolvedListRef}
-          data={rows}
-          keyExtractor={(row) => row.id}
-          renderItem={({ item }) => renderRowContent(item)}
-          estimatedItemSize={90}
-          getEstimatedItemSize={rowHeightHints.getEstimatedItemSize}
-          onItemSizeChanged={rowHeightHints.onItemSizeChanged}
-          // LegendList caches rendered rows, so every local expansion map that changes row content
-          // has to be surfaced through extraData.
-          extraData={timelineExtraData}
-          // Deliberately keyed off the *inherited* anchor rather than
-          // `tailAnchorSlideInFlight`: LegendList re-targets the end on every data
-          // change while this is true, which would yank a live post-send anchor
-          // out of its hold. A remount that inherits an already-settled anchor has
-          // no slide to preserve, so bootstrapping at the end is what we want.
-          initialScrollAtEnd={tailAnchorMessageId === null || hasInheritedTailAnchor}
-          {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
-          maintainScrollAtEnd={followLiveOutput && !tailAnchorSlideInFlight}
-          maintainScrollAtEndThreshold={
-            followLiveOutput && !tailAnchorSlideInFlight ? Number.POSITIVE_INFINITY : 0.1
-          }
-          {...(tailAnchorMessageId !== null
-            ? { maintainVisibleContentPosition: false }
-            : !followLiveOutput
-              ? { maintainVisibleContentPosition: true }
+    <ThreadImageSequenceContext.Provider value={threadImageSequence}>
+      <InlineVisualEmbedContext.Provider value={null}>
+        <div ref={timelineRootRef} className="contents" data-messages-timeline-root="true">
+          <LegendList<MessagesTimelineRow>
+            ref={resolvedListRef}
+            data={rows}
+            keyExtractor={(row) => row.id}
+            renderItem={({ item }) => renderRowContent(item)}
+            estimatedItemSize={90}
+            getEstimatedItemSize={rowHeightHints.getEstimatedItemSize}
+            onItemSizeChanged={rowHeightHints.onItemSizeChanged}
+            // LegendList caches rendered rows, so every local expansion map that changes row content
+            // has to be surfaced through extraData.
+            extraData={timelineExtraData}
+            // Deliberately keyed off the *inherited* anchor rather than
+            // `tailAnchorSlideInFlight`: LegendList re-targets the end on every data
+            // change while this is true, which would yank a live post-send anchor
+            // out of its hold. A remount that inherits an already-settled anchor has
+            // no slide to preserve, so bootstrapping at the end is what we want.
+            initialScrollAtEnd={tailAnchorMessageId === null || hasInheritedTailAnchor}
+            {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
+            maintainScrollAtEnd={followLiveOutput && !tailAnchorSlideInFlight}
+            maintainScrollAtEndThreshold={
+              followLiveOutput && !tailAnchorSlideInFlight ? Number.POSITIVE_INFINITY : 0.1
+            }
+            {...(tailAnchorMessageId !== null
+              ? { maintainVisibleContentPosition: false }
+              : !followLiveOutput
+                ? { maintainVisibleContentPosition: true }
+                : {})}
+            onClickCapture={onMessagesClickCapture}
+            onMouseUp={onMessagesMouseUp}
+            onPointerCancel={handleMessagesPointerCancel}
+            onPointerDown={handleMessagesPointerDown}
+            onPointerUp={onMessagesPointerUp}
+            onScroll={handleListScroll}
+            {...(onTrailHighlightsChange
+              ? {
+                  onViewableItemsChanged: handleViewableItemsChanged,
+                  viewabilityConfig: TRAIL_VIEWABILITY_CONFIG,
+                }
               : {})}
-          onClickCapture={onMessagesClickCapture}
-          onMouseUp={onMessagesMouseUp}
-          onPointerCancel={handleMessagesPointerCancel}
-          onPointerDown={handleMessagesPointerDown}
-          onPointerUp={onMessagesPointerUp}
-          onScroll={handleListScroll}
-          {...(onTrailHighlightsChange
-            ? {
-                onViewableItemsChanged: handleViewableItemsChanged,
-                viewabilityConfig: TRAIL_VIEWABILITY_CONFIG,
-              }
-            : {})}
-          onTouchEnd={onMessagesTouchEnd}
-          onTouchMove={handleMessagesTouchMove}
-          onTouchStart={handleMessagesTouchStart}
-          onWheel={handleMessagesWheel}
-          data-chat-scroll-container="true"
-          // LegendList sets overflow inline, so a CSS class cannot keep this
-          // vertical transcript from gaining a horizontal scrollbar.
-          showsHorizontalScrollIndicator={false}
-          ListFooterComponent={listFooter}
-          ListHeaderComponent={historyHeader}
-          // `scroll-edge-fade` (index.css) dissolves rows under the chat header and toward
-          // the composer instead of cutting them. It is scroll-aware via
-          // `animation-timeline: scroll()` and paint-only, so each edge clears once nothing
-          // is scrolled past it (a pinned or non-scrollable transcript stays crisp) without
-          // feeding back into auto-follow or list measurement. With the floating composer,
-          // `listScrollStyle` moves the bottom fade up to the composer's top edge and
-          // intersects the footer-controls dissolve.
-          className={cn(
-            "scroll-edge-fade h-full overscroll-y-contain py-3 [scrollbar-gutter:stable] sm:py-4",
-            ENVIRONMENT_CONTENT_INSET_MOTION_CLASS,
-            CHAT_COLUMN_GUTTER_CLASS_NAME,
-          )}
-          {...(listScrollStyle ? { style: listScrollStyle } : {})}
-        />
-      </div>
-    </InlineVisualEmbedContext.Provider>
+            onTouchEnd={onMessagesTouchEnd}
+            onTouchMove={handleMessagesTouchMove}
+            onTouchStart={handleMessagesTouchStart}
+            onWheel={handleMessagesWheel}
+            data-chat-scroll-container="true"
+            // LegendList sets overflow inline, so a CSS class cannot keep this
+            // vertical transcript from gaining a horizontal scrollbar.
+            showsHorizontalScrollIndicator={false}
+            ListFooterComponent={listFooter}
+            ListHeaderComponent={historyHeader}
+            // `scroll-edge-fade` (index.css) dissolves rows under the chat header and toward
+            // the composer instead of cutting them. It is scroll-aware via
+            // `animation-timeline: scroll()` and paint-only, so each edge clears once nothing
+            // is scrolled past it (a pinned or non-scrollable transcript stays crisp) without
+            // feeding back into auto-follow or list measurement. With the floating composer,
+            // `listScrollStyle` moves the bottom fade up to the composer's top edge and
+            // intersects the footer-controls dissolve.
+            // Native scrollbars are hidden; ChatTranscriptPane draws the host overlay.
+            className={cn(
+              "scroll-edge-fade h-full overflow-x-hidden overscroll-y-contain py-3 [-ms-overflow-style:none] [scrollbar-width:none] sm:py-4 [&::-webkit-scrollbar]:hidden",
+              ENVIRONMENT_CONTENT_INSET_MOTION_CLASS,
+              CHAT_COLUMN_GUTTER_CLASS_NAME,
+            )}
+            {...(listScrollStyle ? { style: listScrollStyle } : {})}
+          />
+        </div>
+      </InlineVisualEmbedContext.Provider>
+    </ThreadImageSequenceContext.Provider>
   );
 });
 
@@ -3927,6 +4026,8 @@ function hasOnlyInlineSkillChips(
 const UserMessageEditForm = memo(function UserMessageEditForm(props: {
   initialValue: string;
   disabled: boolean;
+  /** Non-null blocks Send (with this explanation) while keeping the draft and Cancel usable. */
+  submitBlockedHint: string | null;
   allowEmpty: boolean;
   chatTypographyStyle: CSSProperties;
   borderClassName: string;
@@ -3937,11 +4038,13 @@ const UserMessageEditForm = memo(function UserMessageEditForm(props: {
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [draft, setDraft] = useState(props.initialValue);
-  const canSubmit = canSubmitUserMessageEdit({
-    draft,
-    allowEmpty: props.allowEmpty,
-    disabled: props.disabled,
-  });
+  const [imeKeyGuard] = useState(createImeKeyGuard);
+  const canSubmit =
+    canSubmitUserMessageEdit({
+      draft,
+      allowEmpty: props.allowEmpty,
+      disabled: props.disabled,
+    }) && props.submitBlockedHint === null;
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -3962,6 +4065,16 @@ const UserMessageEditForm = memo(function UserMessageEditForm(props: {
   }, [draft]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Keys the IME consumed must not act on the form: Escape dismissing the
+    // candidate list would close the whole editor and drop the draft, and the
+    // Enter that commits a candidate (delivered after compositionend on
+    // WebKit) would land a stray newline in the edited text.
+    if (imeKeyGuard.shouldIgnoreKeyDown(event.nativeEvent)) {
+      if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+        event.preventDefault();
+      }
+      return;
+    }
     if (event.key === "Escape") {
       event.preventDefault();
       props.onCancel();
@@ -3999,9 +4112,17 @@ const UserMessageEditForm = memo(function UserMessageEditForm(props: {
         className="max-h-60 min-h-0 w-full resize-none overflow-y-auto border-0 bg-transparent p-0 font-system-ui text-foreground outline-none placeholder:text-muted-foreground/45 disabled:opacity-70"
         style={props.chatTypographyStyle}
         onChange={(event) => setDraft(event.target.value)}
+        onCompositionStart={imeKeyGuard.onCompositionStart}
+        onCompositionEnd={imeKeyGuard.onCompositionEnd}
         onKeyDown={handleKeyDown}
+        onKeyUp={imeKeyGuard.onKeyUp}
       />
-      <div className="mt-2 flex justify-end gap-2">
+      <div className="mt-2 flex items-center justify-end gap-2">
+        {props.submitBlockedHint !== null ? (
+          <p className="mr-auto font-system-ui text-ui-xs text-destructive/80">
+            {props.submitBlockedHint}
+          </p>
+        ) : null}
         <Button
           type="button"
           size="xs"

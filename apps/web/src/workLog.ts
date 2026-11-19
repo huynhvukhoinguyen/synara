@@ -1,3 +1,4 @@
+import { i18n, t } from "~/i18n";
 import {
   classifyCodexStderr,
   CODEX_STDERR_NATIVE_EVENT_TYPE,
@@ -37,7 +38,6 @@ import {
   summarizeToolRawOutput,
 } from "@synara/shared/toolOutputSummary";
 import { pluralize, stripTerminalControlSequences } from "@synara/shared/text";
-import { i18n, t } from "~/i18n";
 import { suppressCoordinatorCheckinMessages } from "@synara/shared/coordinatorCheckin";
 import { PROVIDER_DESCRIPTORS } from "@synara/shared/providerMetadata";
 import {
@@ -50,6 +50,7 @@ import {
   type SynaraMcpToolStatus,
 } from "./lib/toolCallLabel";
 import { toolArgumentSummaryToolName } from "./lib/toolArgumentSummary";
+import { deriveWorkEntryImages, type WorkEntryImage } from "./lib/workEntryImages";
 import { computerToolName, describeComputerToolCall } from "./lib/computerToolPresentation";
 import {
   deriveWorkLogToolDetails,
@@ -72,6 +73,17 @@ export type WorkLogRequestKind = ApprovalRequestKind;
 // apps/server/src/orchestration/commandInvariants.ts, which the web app cannot
 // import.
 const CHECKPOINT_REVERT_FAILED_ACTIVITY_KIND = "checkpoint.revert.failed";
+// Older adapters persisted these native notifications as transcript activities.
+// Keep diagnostics in storage, but apply the adapter's bookkeeping filter on replay too.
+const DIAGNOSTIC_ONLY_CODEX_METHODS = new Set([
+  "remoteControl/status/changed",
+  "skills/changed",
+  "session/threadOpenRequested",
+  "session/threadOpenResolved",
+  "thread/settings/updated",
+  "thread/goal/cleared",
+  "thread/reverted",
+]);
 export const PROVIDER_CONTEXT_LIFECYCLE_ACTIVITY_KIND = "provider.context.changed";
 const SESSION_CONTEXT_RECAP_PREVIEW_MAX_CHARS = 600;
 // Cached titles remain English source data for command classification.
@@ -157,6 +169,8 @@ export interface WorkLogEntry {
   rawCommand?: string;
   preview?: string;
   changedFiles?: ReadonlyArray<string>;
+  /** Paths a shell command reads, lists or searches, as the provider parsed it. */
+  commandActionPaths?: ReadonlyArray<string>;
   tone: "thinking" | "tool" | "info" | "error";
   toolTitle?: string;
   /** Localized inferred heading; source toolTitle stays unchanged. */
@@ -168,6 +182,8 @@ export interface WorkLogEntry {
   toolStatus?: SynaraMcpToolStatus;
   liveActivity?: WorkLogLiveActivity;
   toolDetails?: WorkLogToolDetails;
+  // Images the call returned to the model or wrote, previewed under the row.
+  images?: ReadonlyArray<WorkEntryImage>;
   itemType?: ToolLifecycleItemType;
   requestKind?: WorkLogRequestKind;
   subagents?: ReadonlyArray<WorkLogSubagent>;
@@ -211,6 +227,8 @@ export interface WorkLogEntry {
     cause: string;
     message: string;
     errorCode?: string;
+    /** What the writer can do about it, shown under the (clamped) message. */
+    nextStep?: string;
     provider?: string;
     // The provider refused the turn for quota: a pause until the limit resets, not a fault.
     usageLimit?: boolean;
@@ -600,6 +618,7 @@ export function deriveWorkLogEntries(
     )
     .filter((activity) => !isQuietTurnLifecycleActivity(activity))
     .filter((activity) => !isQuietApprovalResolutionActivity(activity))
+    .filter((activity) => !isDiagnosticOnlyNativeActivity(activity))
     .filter((activity) => activity.kind !== "account.rate-limits.updated")
     // Environment replaces quota history and missing-checkpoint notices when available.
     .filter(
@@ -1190,6 +1209,26 @@ function isTurnFailureActivity(activity: OrchestrationThreadActivity): boolean {
   );
 }
 
+// Codes the Claude adapter attaches when Claude Code exits nonzero and said
+// why on stderr (apps/server/src/provider/claudeProcessExit.ts). The card shows
+// that reason verbatim and adds the step that fixes it. `model_not_found` is the
+// Agent SDK's own code for a model the account cannot use, which arrives as a
+// structured error rather than an exit; only the Claude adapter emits it.
+const CLAUDE_EXIT_NEXT_STEPS = {
+  claude_cli_outdated: "chat:claudeExitNextStepUpdateCli",
+  claude_model_needs_newer_cli: "chat:claudeExitNextStepUpdateCliForModel",
+  claude_auth_required: "chat:claudeExitNextStepSignIn",
+  claude_model_unavailable: "chat:claudeExitNextStepPickModel",
+  model_not_found: "chat:claudeExitNextStepPickModel",
+  claude_access_forbidden: "chat:claudeExitNextStepAccessForbidden",
+  claude_cli_failed: "chat:claudeExitNextStepCheckCli",
+} as const;
+
+function claudeExitNextStep(errorCode: string | undefined, translate: typeof t): string | null {
+  if (!errorCode || !Object.hasOwn(CLAUDE_EXIT_NEXT_STEPS, errorCode)) return null;
+  return translate(CLAUDE_EXIT_NEXT_STEPS[errorCode as keyof typeof CLAUDE_EXIT_NEXT_STEPS]);
+}
+
 // Claude reports `rate_limit`; Codex reports its quota variants by name.
 const USAGE_LIMIT_ERROR_CODES: ReadonlySet<string> = new Set([
   "rate_limit",
@@ -1235,6 +1274,9 @@ function deriveTurnFailureEntries(
     const provider = asTrimmedString(payload?.provider) ?? previous?.turnFailure?.provider;
     const overloaded =
       errorCode === "server_overloaded" || /selected model is at capacity/i.test(cause);
+    // Shown under the banner's body, unclamped, and copied with it.
+    const nextStep = claudeExitNextStep(errorCode, translate);
+    // Rendered as the failure banner's body; the provider's cause stays verbatim.
     const message = overloaded
       ? translate("chat:theTaskWasInterruptedBecauseTheModelIsAt")
       : translate("chat:theTaskWasInterruptedByAProviderErrorWork", {
@@ -1258,6 +1300,7 @@ function deriveTurnFailureEntries(
         cause,
         message,
         ...(errorCode ? { errorCode } : {}),
+        ...(nextStep ? { nextStep } : {}),
         ...(provider ? { provider } : {}),
         ...(errorCode && USAGE_LIMIT_ERROR_CODES.has(errorCode) ? { usageLimit: true } : {}),
       },
@@ -1445,9 +1488,12 @@ function shouldKeepActivityForWorkLog(
     return true;
   }
 
-  // Recovery and pre-turn preparation feedback may precede the provider turn id.
+  // Recovery and pre-turn preparation feedback may precede the provider turn id,
+  // or refer to a turn that Undo rolled out of view. Keep it visible, and the
+  // notice of an Undo that left conflicts to resolve with it.
   if (
     activity.kind === CHECKPOINT_REVERT_FAILED_ACTIVITY_KIND ||
+    activity.kind === "checkpoint.revert.conflicts" ||
     activity.kind === "checkpoint.baseline.skipped"
   ) {
     return true;
@@ -1482,6 +1528,25 @@ function shouldKeepActivityForWorkLog(
   }
 
   return latestTurnId ? activity.turnId === latestTurnId : true;
+}
+
+function isDiagnosticOnlyNativeActivity(activity: OrchestrationThreadActivity): boolean {
+  if (activity.kind !== "provider.event.unmapped" || activity.tone === "error") {
+    return false;
+  }
+  const payload = asRecord(activity.payload);
+  const method = asTrimmedString(payload?.nativeEventType);
+  if (method && DIAGNOSTIC_ONLY_CODEX_METHODS.has(method)) {
+    return true;
+  }
+  const data = asRecord(payload?.data);
+  // MCP initialization isn't a tool call. Unknown states and failures must remain visible.
+  return (
+    method === "mcpServer/startupStatus/updated" &&
+    (data?.status === "starting" || data?.status === "ready") &&
+    !data.error &&
+    !data.failureReason
+  );
 }
 
 function isQuietTurnLifecycleActivity(activity: OrchestrationThreadActivity): boolean {
@@ -2170,11 +2235,27 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (changedFiles.length > 0) {
     entry.changedFiles = changedFiles;
   }
+  const commandActionPaths = extractCommandActionPaths(payload);
+  if (commandActionPaths.length > 0) {
+    entry.commandActionPaths = commandActionPaths;
+  }
   if (itemType) {
     entry.itemType = itemType;
   }
   if (requestKind) {
     entry.requestKind = requestKind;
+  }
+  if (activity.kind.startsWith("tool.")) {
+    const images = deriveWorkEntryImages({
+      payload,
+      itemType,
+      isFileChange: itemType === "file_change" || requestKind === "file-change",
+      completed: toolStatus === "completed",
+      changedFiles,
+    });
+    if (images.length > 0) {
+      entry.images = images;
+    }
   }
   if (
     activity.kind === "tool.started" &&
@@ -2664,15 +2745,26 @@ function shouldCollapseRuntimeWarningEntries(
   if (previous.turnId !== next.turnId) {
     return false;
   }
+  // Upstream 1.5 labels a runtime warning with its message, so the label carries
+  // Codex's retry timestamp too.
   return (
-    normalizeToolTextForComparison(previous.label) === normalizeToolTextForComparison(next.label) &&
-    normalizeToolTextForComparison(
+    normalizeToolTextForComparison(normalizeRuntimeWarningForComparison(previous.label)) ===
+      normalizeToolTextForComparison(normalizeRuntimeWarningForComparison(next.label)) &&
+    normalizeRuntimeWarningForComparison(
       previous.runtimeWarningMessage ?? previous.detail ?? previous.preview ?? "",
     ) ===
-      normalizeToolTextForComparison(
+      normalizeRuntimeWarningForComparison(
         next.runtimeWarningMessage ?? next.detail ?? next.preview ?? "",
       )
   );
+}
+
+function normalizeRuntimeWarningForComparison(message: string): string {
+  // Codex's Rust stderr prefixes each retry with a fresh timestamp. Ignore only
+  // that prefix, not destination URLs, error details, or case-sensitive paths.
+  return message
+    .replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s+(?=(?:ERROR|WARN)\s)/, "")
+    .trim();
 }
 
 function mergeRuntimeWarningEntries(
@@ -2831,6 +2923,7 @@ function mergeDerivedWorkLogEntries(
     : (next.toolStatus ?? previous.toolStatus);
   const liveActivity = mergeWorkLogLiveActivity(previous.liveActivity, next.liveActivity);
   const toolDetails = mergeWorkLogToolDetails(previous.toolDetails, next.toolDetails);
+  const images = next.images ?? previous.images;
   // Keep the visual anchor below, but let the latest known turn own lifecycle
   // settlement and live composer state when a background tool spans turns.
   const turnId = next.turnId ?? previous.turnId;
@@ -2865,6 +2958,7 @@ function mergeDerivedWorkLogEntries(
     ...(toolStatus ? { toolStatus } : {}),
     ...(liveActivity ? { liveActivity } : {}),
     ...(toolDetails ? { toolDetails } : {}),
+    ...(images ? { images } : {}),
   };
 }
 
@@ -3622,6 +3716,15 @@ function extractPrimaryCommandAction(
 
 // Codex has emitted commandActions both on the item and on the surrounding raw
 // payload; scan the nearby envelopes before falling back to generic command text.
+function extractCommandActionPaths(payload: Record<string, unknown> | null): string[] {
+  const data = asRecord(payload?.data);
+  const paths = collectCommandActions(payload, data, asRecord(data?.item)).flatMap((action) => {
+    const path = asTrimmedString(asRecord(action)?.path);
+    return path ? [path] : [];
+  });
+  return [...new Set(paths)];
+}
+
 function collectCommandActions(
   payload: Record<string, unknown> | null,
   data: Record<string, unknown> | null,
