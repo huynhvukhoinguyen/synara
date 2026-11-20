@@ -835,6 +835,9 @@ export const ThreadHandoff = Schema.Struct({
   sourceProvider: PersistedProviderKind,
   importedAt: IsoDateTime,
   bootstrapStatus: ThreadHandoffBootstrapStatus,
+  // Set when the thread came over from another Synara home rather than from a
+  // provider handoff; surfaces word it as an import.
+  origin: Schema.optional(Schema.Literal("home-import")),
 });
 export type ThreadHandoff = typeof ThreadHandoff.Type;
 
@@ -1668,6 +1671,8 @@ const ThreadArchiveCommand = Schema.Struct({
   type: Schema.Literal("thread.archive"),
   commandId: CommandId,
   threadId: ThreadId,
+  /** When the thread was archived; an import carries the source's time. Omitted = now. */
+  archivedAt: Schema.optional(IsoDateTime),
 });
 
 const ThreadUnarchiveCommand = Schema.Struct({
@@ -2176,6 +2181,12 @@ const ThreadMessagesImportCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   messages: Schema.Array(ThreadHandoffImportedMessage),
+  // "handoff-import" marks the rows as earlier transcript that a pending
+  // thread handoff bootstraps into the first new turn. Omitted = "native".
+  source: Schema.optional(Schema.Literal("handoff-import")),
+  // Recorded with the rows at createdAt, so an import keeps the source
+  // thread's last-activity time instead of taking the import time.
+  handoff: Schema.optional(ThreadHandoff),
   createdAt: IsoDateTime,
 });
 

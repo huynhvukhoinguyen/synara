@@ -365,6 +365,20 @@ describe("threadHandoff", () => {
     ).toBe("从 Claude 移交");
   });
 
+  it("words a thread imported from another home as an import", () => {
+    expect(
+      resolveThreadHandoffBadgeLabel({
+        handoff: {
+          sourceThreadId: ThreadId.makeUnsafe("source-thread"),
+          sourceProvider: "claudeAgent",
+          importedAt: "2026-08-16T12:00:00.000Z",
+          bootstrapStatus: "pending",
+          origin: "home-import",
+        },
+      }),
+    ).toBe("Imported from the classic app");
+  });
+
   it("does not borrow a default account's health for unavailable or unchecked accounts", () => {
     const providerInstances = getProviderInstanceOptions(
       AppSettingsSchema.makeUnsafe({

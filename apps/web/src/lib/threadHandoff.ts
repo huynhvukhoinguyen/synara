@@ -106,6 +106,9 @@ export function resolveThreadHandoffBadgeLabel(thread: Pick<Thread, "handoff">):
   if (!thread.handoff) {
     return null;
   }
+  if (thread.handoff.origin === "home-import") {
+    return t("chat:importedFromClassicApp");
+  }
   return t("chat:handoffFromProvider", {
     provider: PROVIDER_DISPLAY_NAMES[thread.handoff.sourceProvider],
   });
