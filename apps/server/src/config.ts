@@ -116,6 +116,9 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   // the real ~/.Trash.
   readonly trashDir?: string | undefined;
   readonly migrationDivergenceConsent?: string | undefined;
+  // Another Synara home whose threads are union-imported once at startup
+  // (SYNARA_IMPORT_THREADS_FROM_HOME, see threadHomeImport.ts).
+  readonly importThreadsFromHome?: string | undefined;
   readonly autoBootstrapProjectFromCwd: boolean;
   readonly logProviderEvents: boolean;
   readonly logWebSocketEvents: boolean;

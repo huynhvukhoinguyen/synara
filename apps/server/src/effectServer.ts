@@ -61,6 +61,7 @@ import {
   resumeQuitInterruptedChats,
 } from "./orchestration/quitResume";
 import { reconcileRestartStuckTurns } from "./orchestration/startupTurnReconciliation";
+import { importThreadsFromHome } from "./threadHomeImport";
 import { ProviderSessionReaper } from "./provider/Services/ProviderSessionReaper";
 import { ProviderRuntimeReconciler } from "./provider/Services/ProviderRuntimeReconciler";
 import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService";
@@ -365,6 +366,23 @@ export const createEffectServer = Effect.fn(function* (
   // The recorded chats get their continuation turn now that the orphaned turns
   // above are settled. Forked so the (rare) dispatch work never delays readiness.
   yield* resumeQuitInterruptedChats(quitResumeRecord).pipe(Effect.forkIn(subscriptionsScope));
+  if (config.importThreadsFromHome) {
+    // A first import of a few hundred threads dispatches for several seconds,
+    // so it runs beside client commands instead of holding them back. Imported
+    // threads reach connected clients through the normal live events. Shutdown
+    // interrupts the fiber before the stamp is written, so the next launch
+    // finishes the run. A failed import is logged and never affects startup.
+    yield* importThreadsFromHome({
+      sourceHomeDir: config.importThreadsFromHome,
+      targetBaseDir: config.baseDir,
+      targetStateDir: config.stateDir,
+      targetAttachmentsDir: config.attachmentsDir,
+    }).pipe(
+      Effect.tap((result) => Effect.logInfo("thread home import finished", result)),
+      Effect.catchCause((cause) => Effect.logWarning("thread home import failed", { cause })),
+      Effect.forkIn(subscriptionsScope),
+    );
+  }
 
   yield* lifecycleEvents.publish({
     type: "welcome",
