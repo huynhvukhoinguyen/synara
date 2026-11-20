@@ -127,6 +127,7 @@ import {
   removeWorkspaceSession,
   updateWorkspaceSession,
 } from "../lib/hosts/workspaceSessions";
+import { IOS_BETA_ANNOUNCEMENT_STORAGE_KEY } from "./hosts/IosBetaAnnouncement";
 import { REMOTE_CONNECTIONS_ANNOUNCEMENT_STORAGE_KEY } from "./hosts/RemoteConnectionsAnnouncement";
 import { WorkspacePanels } from "./hosts/WorkspacePanels";
 
@@ -2920,6 +2921,60 @@ describe("ChatView transcript geometry (full app)", () => {
     }
   });
 
+  // Lattice's Agent panel is this app's whole viewport, so the panel's width picks the
+  // header. Open-thread tabs from 768px up used to replace the title row, and with it the
+  // chat history menu, the panel's only way back to a thread whose tab was closed
+  // (lattice#1195). Every width has to keep the history menu and list the project's threads.
+  it.each([
+    { name: "narrow panel", width: 520 },
+    { name: "tab breakpoint", width: 768 },
+    { name: "wide panel", width: 1_400 },
+  ])("keeps Lattice's chat history menu reachable at a $name", async ({ width }) => {
+    sessionStorage.setItem(
+      "synara.poc.embed-mode",
+      JSON.stringify({
+        workspaceRoot: "/repo/project",
+        theme: "light",
+        surface: "chrome",
+        hostOrigin: window.location.origin,
+        locale: "en",
+      }),
+    );
+    onTestFinished(() => sessionStorage.removeItem("synara.poc.embed-mode"));
+    const earlierThreadId = "thread-embed-history-earlier" as ThreadId;
+    const base = addThreadToSnapshot(
+      createSnapshotForTargetUser({
+        targetMessageId: "msg-user-embed-history" as MessageId,
+        targetText: "embed history",
+      }),
+      earlierThreadId,
+    );
+    const snapshot: OrchestrationReadModel = {
+      ...base,
+      threads: base.threads.map((thread) =>
+        thread.id === earlierThreadId ? { ...thread, title: "Earlier embed thread" } : thread,
+      ),
+    };
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, width },
+      snapshot,
+    });
+    try {
+      await waitForComposerEditor();
+      await expect
+        .element(page.getByRole("button", { name: "New thread in this workspace" }))
+        .not.toBeInTheDocument();
+      const historyTrigger = page.getByRole("button", { name: /open chat history$/ });
+      await expect.element(historyTrigger).toBeVisible();
+      await historyTrigger.click();
+      await expect
+        .element(page.getByRole("menuitem", { name: /Earlier embed thread/ }))
+        .toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   // Lattice's embedded dock holds only the simulator. A figure render the agent read
   // outside the project used to open a hidden file pane there, which left the dock
   // open with nothing in it but the "iOS Simulator" launcher.
@@ -4761,6 +4816,9 @@ describe("ChatView transcript geometry (full app)", () => {
       REMOTE_CONNECTIONS_ANNOUNCEMENT_STORAGE_KEY,
       JSON.stringify({ acknowledged: true }),
     );
+    // Remote connections make the iPhone beta sheet eligible too; it opens once the
+    // Create project dialog closes and would cover the project's actions menu.
+    localStorage.setItem(IOS_BETA_ANNOUNCEMENT_STORAGE_KEY, JSON.stringify({ acknowledged: true }));
     const destinationSpaceId = SpaceId.makeUnsafe("remote-destination");
     const hostId = "remote-project-owner";
     const projectId = ProjectId.makeUnsafe("remote-created-project");
