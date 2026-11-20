@@ -85,6 +85,8 @@ export interface ThreadHomeImportResult {
   readonly skippedExistingCount: number;
   readonly failedThreadIds: ReadonlyArray<ThreadId>;
   readonly skippedReason?: string;
+  /** Wall time of each phase: the file copy, opening and migrating the copy, the commands. */
+  readonly timingsMs?: { readonly copy: number; readonly open: number; readonly dispatch: number };
 }
 
 const skippedImport = (skippedReason: string): ThreadHomeImportResult => ({
@@ -246,6 +248,7 @@ export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function
     directory: input.targetStateDir,
     prefix: ".thread-home-import-",
   });
+  const copyStartedAt = Date.now();
   const stagedDbPath = yield* Effect.try({
     try: () => copyLiveDatabase(sourceDbPath, join(stagingDir, "source")),
     catch: (cause) =>
@@ -257,6 +260,7 @@ export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function
   // newer than this build fails here and the import is skipped. The query
   // layer must be fresh: built from the server's memo map it would resolve
   // to the instance already bound to this server's own database.
+  const openStartedAt = Date.now();
   const sourceServices = yield* Layer.build(
     Layer.fresh(OrchestrationProjectionSnapshotQueryLive).pipe(
       Layer.provide(makeSqlitePersistenceLive(stagedDbPath)),
@@ -264,6 +268,7 @@ export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function
   );
   const sourceQuery = ServiceMap.get(sourceServices, ProjectionSnapshotQuery);
   const sourceModel = yield* sourceQuery.getCommandReadModel();
+  const dispatchStartedAt = Date.now();
 
   const threadIdKnown = (threadId: ThreadId) =>
     sql<{ readonly known: number }>`
@@ -332,14 +337,18 @@ export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function
   const resolveTargetProject = Effect.fnUntraced(function* (sourceProject: OrchestrationProject) {
     const mapped = targetProjectIds.get(sourceProject.id);
     if (mapped) return mapped;
-    const sameRootProjects = (yield* engine.getReadModel()).projects.filter(
-      (project) =>
-        project.deletedAt === null &&
-        workspaceRootsEqual(project.workspaceRoot, sourceProject.workspaceRoot, { platform }),
-    );
-    const existing =
-      sameRootProjects.find((project) => project.kind === sourceProject.kind) ??
-      sameRootProjects[0];
+    const findSameRootProject = Effect.map(engine.getReadModel(), (model) => {
+      const sameRootProjects = model.projects.filter(
+        (project) =>
+          project.deletedAt === null &&
+          workspaceRootsEqual(project.workspaceRoot, sourceProject.workspaceRoot, { platform }),
+      );
+      return (
+        sameRootProjects.find((project) => project.kind === sourceProject.kind) ??
+        sameRootProjects[0]
+      );
+    });
+    const existing = yield* findSameRootProject;
     if (existing) {
       targetProjectIds.set(sourceProject.id, existing.id);
       return existing.id;
@@ -347,22 +356,36 @@ export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function
     const projectId = (yield* projectIdKnown(sourceProject.id))
       ? ProjectId.makeUnsafe(crypto.randomUUID())
       : sourceProject.id;
-    yield* engine.dispatch({
-      type: "project.create",
-      commandId: newCommandId(),
-      projectId,
-      kind: sourceProject.kind,
-      title: sourceProject.title,
-      workspaceRoot: sourceProject.workspaceRoot,
-      createWorkspaceRootIfMissing: false,
-      reuseExistingWorkspaceRoot: false,
-      defaultModelSelection: sourceProject.defaultModelSelection,
-      isPinned: sourceProject.isPinned,
-      createdAt: sourceProject.createdAt,
-    });
-    targetProjectIds.set(sourceProject.id, projectId);
-    createdProjectIds.push(projectId);
-    return projectId;
+    // The import runs while clients are live, so a client may add the same
+    // folder between the lookup above and this command. preserveExistingProject
+    // makes the decider refuse instead of retiring that new project, and the
+    // refusal maps the source project onto it.
+    const targetProjectId = yield* engine
+      .dispatch({
+        type: "project.create",
+        commandId: newCommandId(),
+        projectId,
+        kind: sourceProject.kind,
+        title: sourceProject.title,
+        workspaceRoot: sourceProject.workspaceRoot,
+        createWorkspaceRootIfMissing: false,
+        reuseExistingWorkspaceRoot: false,
+        defaultModelSelection: sourceProject.defaultModelSelection,
+        isPinned: sourceProject.isPinned,
+        preserveExistingProject: true,
+        createdAt: sourceProject.createdAt,
+      })
+      .pipe(
+        Effect.as(projectId),
+        Effect.catch((error) =>
+          Effect.flatMap(findSameRootProject, (raced) =>
+            raced ? Effect.succeed(raced.id) : Effect.fail(error),
+          ),
+        ),
+      );
+    targetProjectIds.set(sourceProject.id, targetProjectId);
+    if (targetProjectId === projectId) createdProjectIds.push(projectId);
+    return targetProjectId;
   });
 
   const importMessages = Effect.fnUntraced(function* (
@@ -494,7 +517,13 @@ export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function
     yield* writeFileAtomic(stampPath, stampBefore);
   }
 
+  const finishedAt = Date.now();
   return {
+    timingsMs: {
+      copy: openStartedAt - copyStartedAt,
+      open: dispatchStartedAt - openStartedAt,
+      dispatch: finishedAt - dispatchStartedAt,
+    },
     importedThreadIds,
     appendedThreadIds,
     createdProjectIds,

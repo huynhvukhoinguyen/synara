@@ -356,19 +356,6 @@ export const createEffectServer = Effect.fn(function* (
       (cause) => new ServerLifecycleError({ operation: "recoverGitHandoffOperations", cause }),
     ),
   );
-  if (config.importThreadsFromHome) {
-    // Before commands are admitted, so the first snapshot a client reads
-    // already lists the imported threads. A failed import never blocks startup.
-    yield* importThreadsFromHome({
-      sourceHomeDir: config.importThreadsFromHome,
-      targetBaseDir: config.baseDir,
-      targetStateDir: config.stateDir,
-      targetAttachmentsDir: config.attachmentsDir,
-    }).pipe(
-      Effect.tap((result) => Effect.logInfo("thread home import finished", result)),
-      Effect.catchCause((cause) => Effect.logWarning("thread home import failed", { cause })),
-    );
-  }
   // Consume only after reconciliation, before admitting commands. If startup
   // fails earlier, both explicit quit and crash records remain available.
   const claimedResumeRecord = yield* claimQuitResumeRecordAtStartup;
@@ -379,6 +366,23 @@ export const createEffectServer = Effect.fn(function* (
   // The recorded chats get their continuation turn now that the orphaned turns
   // above are settled. Forked so the (rare) dispatch work never delays readiness.
   yield* resumeQuitInterruptedChats(quitResumeRecord).pipe(Effect.forkIn(subscriptionsScope));
+  if (config.importThreadsFromHome) {
+    // A first import of a few hundred threads dispatches for several seconds,
+    // so it runs beside client commands instead of holding them back. Imported
+    // threads reach connected clients through the normal live events. Shutdown
+    // interrupts the fiber before the stamp is written, so the next launch
+    // finishes the run. A failed import is logged and never affects startup.
+    yield* importThreadsFromHome({
+      sourceHomeDir: config.importThreadsFromHome,
+      targetBaseDir: config.baseDir,
+      targetStateDir: config.stateDir,
+      targetAttachmentsDir: config.attachmentsDir,
+    }).pipe(
+      Effect.tap((result) => Effect.logInfo("thread home import finished", result)),
+      Effect.catchCause((cause) => Effect.logWarning("thread home import failed", { cause })),
+      Effect.forkIn(subscriptionsScope),
+    );
+  }
 
   yield* lifecycleEvents.publish({
     type: "welcome",
