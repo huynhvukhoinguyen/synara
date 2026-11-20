@@ -203,6 +203,8 @@ import {
 import { ProviderAdapterRegistry } from "../../provider/Services/ProviderAdapterRegistry.ts";
 import { PROVIDER_DEBUG_MODE_PROMPT_PREFIX } from "../../provider/debugMode.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { importThreadsFromHome } from "../../threadHomeImport.ts";
+import { makeSynaraHomeRuntime } from "../testing/synaraHomeFixture.ts";
 import {
   checkpointRefForThreadTurn,
   isManagedCheckpointRefForThread,
@@ -29298,6 +29300,159 @@ describe("ProviderCommandReactor", () => {
     expect(harness.startSession.mock.calls.length).toBe(0);
     expect((await readHarnessThread(harness))?.runtimeMode).toBe("approval-required");
     expect((await readHarnessThread(harness))?.session?.runtimeMode).toBe("full-access");
+  });
+  it("imports threads from another home without any provider call", async () => {
+    const sourceBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), "synara-import-source-"));
+    createdBaseDirs.add(sourceBaseDir);
+    const now = new Date().toISOString();
+    const claudeSelection: ModelSelection = { provider: "claudeAgent", model: "claude-sonnet-4-5" };
+    const source = makeSynaraHomeRuntime(sourceBaseDir);
+    const sourceEngine = await source.runPromise(Effect.service(OrchestrationEngineService));
+    const dispatchSource = (command: OrchestrationCommand) =>
+      source.runPromise(sourceEngine.dispatch(command));
+    await dispatchSource({
+      type: "project.create",
+      commandId: CommandId.makeUnsafe("source-project-create"),
+      projectId: asProjectId("source-project"),
+      title: "Source project",
+      workspaceRoot: "/tmp/provider-project",
+      createdAt: now,
+    });
+    for (const threadId of ["imported-live", "imported-archived"]) {
+      await dispatchSource({
+        type: "thread.create",
+        commandId: CommandId.makeUnsafe(`source-create-${threadId}`),
+        threadId: ThreadId.makeUnsafe(threadId),
+        projectId: asProjectId("source-project"),
+        title: `Source ${threadId}`,
+        modelSelection: claudeSelection,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+      });
+      await dispatchSource({
+        type: "thread.messages.import",
+        commandId: CommandId.makeUnsafe(`source-messages-${threadId}`),
+        threadId: ThreadId.makeUnsafe(threadId),
+        messages: [
+          {
+            messageId: asMessageId(`${threadId}-user`),
+            role: "user",
+            text: "Earlier classic question",
+            createdAt: now,
+            updatedAt: now,
+          },
+          {
+            messageId: asMessageId(`${threadId}-assistant`),
+            role: "assistant",
+            text: "Earlier classic answer",
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        createdAt: now,
+      });
+    }
+    await dispatchSource({
+      type: "thread.archive",
+      commandId: CommandId.makeUnsafe("source-archive"),
+      threadId: ThreadId.makeUnsafe("imported-archived"),
+    });
+    await source.dispose();
+
+    const harness = await createHarness({ threadModelSelection: claudeSelection });
+    const providerMocks = {
+      startSession: harness.startSession,
+      startSessionWithOutcome: harness.startSessionWithOutcome,
+      completePriorTranscriptBootstrap: harness.completePriorTranscriptBootstrap,
+      sendTurn: harness.sendTurn,
+      steerTurn: harness.steerTurn,
+      startReview: harness.startReview,
+      forkThread: harness.forkThread,
+      interruptTurn: harness.interruptTurn,
+      stopTask: harness.stopTask,
+      backgroundTask: harness.backgroundTask,
+      steerSubagent: harness.steerSubagent,
+      respondToRequest: harness.respondToRequest,
+      respondToUserInput: harness.respondToUserInput,
+      rollbackConversation: harness.rollbackConversation,
+      setThreadName: harness.setThreadName,
+      stopSession: harness.stopSession,
+      stopRuntimeSession: harness.stopRuntimeSession,
+      getRuntimeSessionStopTarget: harness.getRuntimeSessionStopTarget,
+      clearSessionResumeCursor: harness.clearSessionResumeCursor,
+    };
+    const callCounts = () =>
+      Object.fromEntries(
+        Object.entries(providerMocks).map(([name, mock]) => [name, mock.mock.calls.length]),
+      );
+    await harness.drain();
+    const callsBefore = callCounts();
+    const config = await harness.runtime.runPromise(Effect.service(ServerConfig));
+    const sql = await harness.runtime.runPromise(Effect.service(SqlClient.SqlClient));
+    const deliverySequenceBefore = await harness.runtime.runPromise(
+      sql<{ readonly sequence: number }>`
+        SELECT COALESCE(MAX(event_sequence), 0) AS sequence FROM orchestration_event_deliveries
+      `,
+    );
+
+    const result = await harness.runtime.runPromise(
+      importThreadsFromHome({
+        sourceHomeDir: sourceBaseDir,
+        targetBaseDir: config.baseDir,
+        targetStateDir: config.stateDir,
+        targetAttachmentsDir: config.attachmentsDir,
+      }),
+    );
+    await harness.drain();
+
+    expect(result.importedThreadIds.toSorted()).toEqual(["imported-archived", "imported-live"]);
+    expect(result.createdProjectIds).toEqual([]);
+    // Archiving goes through the reactor's ordinary stop path. For a thread
+    // with no provider binding its only provider-service touch is the
+    // transcript-marker cleanup, which finds no binding and returns.
+    expect(callCounts()).toEqual({
+      ...callsBefore,
+      completePriorTranscriptBootstrap: callsBefore.completePriorTranscriptBootstrap! + 1,
+    });
+    expect(harness.completePriorTranscriptBootstrap.mock.calls.at(-1)?.[0]).toEqual({
+      threadId: "imported-archived",
+    });
+    // The durable provider consumer only acknowledged the replay-safe
+    // lifecycle intents; nothing is left to replay into a provider.
+    const deliveryRows = await harness.runtime.runPromise(
+      sql<{ readonly threadId: string; readonly state: string; readonly eventType: string }>`
+        SELECT d.thread_id AS "threadId", d.state, e.event_type AS "eventType"
+        FROM orchestration_event_deliveries d
+        JOIN orchestration_events e ON e.sequence = d.event_sequence
+        WHERE d.event_sequence > ${deliverySequenceBefore[0]?.sequence ?? 0}
+        ORDER BY d.event_sequence
+      `,
+    );
+    expect(deliveryRows.map((row) => [row.threadId, row.eventType, row.state])).toEqual([
+      ["imported-archived", "thread.created", "succeeded"],
+      ["imported-archived", "thread.archived", "succeeded"],
+      ["imported-live", "thread.created", "succeeded"],
+    ]);
+    const imported = await harness.runtime.runPromise(
+      harness.projectionSnapshotQuery.getThreadDetailById(ThreadId.makeUnsafe("imported-live")),
+    );
+    expect(Option.getOrNull(imported)?.projectId).toBe("project-1");
+    expect(Option.getOrNull(imported)?.session).toBeNull();
+
+    // A later message in the imported thread starts its provider normally.
+    await dispatchHarnessUserTurn(harness, {
+      messageId: "imported-live-next-user",
+      text: "Continue in native",
+      createdAt: new Date().toISOString(),
+      threadId: ThreadId.makeUnsafe("imported-live"),
+    });
+    await waitFor(() => harness.sendTurn.mock.calls.length === callsBefore.sendTurn! + 1);
+    const input = harness.sendTurn.mock.calls.at(-1)?.[0] as { input?: string } | undefined;
+    expect(input?.input).toContain("Continue in native");
+    expect(harness.startSessionWithOutcome.mock.calls.at(-1)?.[0]).toBe("imported-live");
   });
 });
 

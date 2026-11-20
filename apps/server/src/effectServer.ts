@@ -61,6 +61,7 @@ import {
   resumeQuitInterruptedChats,
 } from "./orchestration/quitResume";
 import { reconcileRestartStuckTurns } from "./orchestration/startupTurnReconciliation";
+import { importThreadsFromHome } from "./threadHomeImport";
 import { ProviderSessionReaper } from "./provider/Services/ProviderSessionReaper";
 import { ProviderRuntimeReconciler } from "./provider/Services/ProviderRuntimeReconciler";
 import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService";
@@ -355,6 +356,19 @@ export const createEffectServer = Effect.fn(function* (
       (cause) => new ServerLifecycleError({ operation: "recoverGitHandoffOperations", cause }),
     ),
   );
+  if (config.importThreadsFromHome) {
+    // Before commands are admitted, so the first snapshot a client reads
+    // already lists the imported threads. A failed import never blocks startup.
+    yield* importThreadsFromHome({
+      sourceHomeDir: config.importThreadsFromHome,
+      targetBaseDir: config.baseDir,
+      targetStateDir: config.stateDir,
+      targetAttachmentsDir: config.attachmentsDir,
+    }).pipe(
+      Effect.tap((result) => Effect.logInfo("thread home import finished", result)),
+      Effect.catchCause((cause) => Effect.logWarning("thread home import failed", { cause })),
+    );
+  }
   // Consume only after reconciliation, before admitting commands. If startup
   // fails earlier, both explicit quit and crash records remain available.
   const claimedResumeRecord = yield* claimQuitResumeRecordAtStartup;

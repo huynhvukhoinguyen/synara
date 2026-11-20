@@ -65,6 +65,7 @@ import {
   SYNARA_DESKTOP_BUNDLE_ID_ENV,
 } from "@synara/shared/desktopIdentity";
 import { runBetaImportIfRequested } from "./betaImport";
+import { SYNARA_IMPORT_THREADS_FROM_HOME_ENV } from "./threadHomeImport";
 import { startBetaUsageSnapshotJob } from "./betaUsageSnapshot";
 import { startHostUsageSnapshotJob } from "./hostUsageSnapshot";
 import { LATEST_MIGRATION_ID } from "./persistence/Migrations";
@@ -259,6 +260,11 @@ const CliEnvConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
+  importThreadsFromHome: Config.string(SYNARA_IMPORT_THREADS_FROM_HOME_ENV).pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+    Config.map((value) => value?.trim() || undefined),
+  ),
   logProviderEvents: optionalBooleanEnvironmentConfig("SYNARA_LOG_PROVIDER_EVENTS"),
   logWebSocketEvents: optionalBooleanEnvironmentConfig("SYNARA_LOG_WS_EVENTS"),
 });
@@ -436,6 +442,7 @@ const ServerConfigLive = (input: CliInput) =>
         migrationDivergenceConsent,
         autoBootstrapProjectFromCwd,
         trashDir: env.trashDir,
+        importThreadsFromHome: env.importThreadsFromHome,
         logProviderEvents,
         logWebSocketEvents,
       } satisfies ServerConfigShape;
