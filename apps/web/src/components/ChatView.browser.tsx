@@ -127,6 +127,7 @@ import {
   removeWorkspaceSession,
   updateWorkspaceSession,
 } from "../lib/hosts/workspaceSessions";
+import { IOS_BETA_ANNOUNCEMENT_STORAGE_KEY } from "./hosts/IosBetaAnnouncement";
 import { REMOTE_CONNECTIONS_ANNOUNCEMENT_STORAGE_KEY } from "./hosts/RemoteConnectionsAnnouncement";
 import { WorkspacePanels } from "./hosts/WorkspacePanels";
 
@@ -4815,6 +4816,9 @@ describe("ChatView transcript geometry (full app)", () => {
       REMOTE_CONNECTIONS_ANNOUNCEMENT_STORAGE_KEY,
       JSON.stringify({ acknowledged: true }),
     );
+    // Remote connections make the iPhone beta sheet eligible too; it opens once the
+    // Create project dialog closes and would cover the project's actions menu.
+    localStorage.setItem(IOS_BETA_ANNOUNCEMENT_STORAGE_KEY, JSON.stringify({ acknowledged: true }));
     const destinationSpaceId = SpaceId.makeUnsafe("remote-destination");
     const hostId = "remote-project-owner";
     const projectId = ProjectId.makeUnsafe("remote-created-project");
