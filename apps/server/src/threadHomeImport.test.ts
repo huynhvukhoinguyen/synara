@@ -19,8 +19,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ServerConfig } from "./config.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
-import { makeSynaraHomeRuntime } from "./orchestration/testing/synaraHomeFixture.ts";
-import { importThreadsFromHome } from "./threadHomeImport.ts";
+import {
+  makeSynaraHomeRuntime,
+  synaraHomeDbPath,
+} from "./orchestration/testing/synaraHomeFixture.ts";
+import {
+  importThreadsFromHome,
+  THREAD_HOME_IMPORT_RESULT_FILE_NAME,
+  THREAD_HOME_IMPORT_STAMP_FILE_NAME,
+} from "./threadHomeImport.ts";
 
 type HomeRuntime = ReturnType<typeof makeSynaraHomeRuntime>;
 type HomeServices = HomeRuntime extends ManagedRuntime.ManagedRuntime<infer R, unknown> ? R : never;
@@ -134,6 +141,15 @@ const readThread = (home: Home, threadId: string) =>
       query.getThreadDetailForExportById(ThreadId.makeUnsafe(threadId)),
     ),
   );
+
+const stampPath = (home: Home) =>
+  nodePath.join(home.config.stateDir, THREAD_HOME_IMPORT_STAMP_FILE_NAME);
+const resultPath = (home: Home) =>
+  nodePath.join(home.config.stateDir, THREAD_HOME_IMPORT_RESULT_FILE_NAME);
+const readResult = (home: Home) =>
+  JSON.parse(fs.readFileSync(resultPath(home), "utf8")) as Record<string, unknown>;
+const stagingDirs = (home: Home) =>
+  fs.readdirSync(home.config.stateDir).filter((entry) => entry.startsWith(".thread-home-import-"));
 
 const listThreads = (home: Home) =>
   home.run(home.engine.getReadModel()).then((model) => model.threads);
@@ -313,12 +329,134 @@ describe("importThreadsFromHome", () => {
     const first = await runImport(target, source);
     const eventsAfterFirst = await eventCount(target);
     const second = await runImport(target, source);
+    // Without the stamp the run copies and compares every id, and still adds nothing.
+    fs.rmSync(stampPath(target));
+    const third = await runImport(target, source);
 
     expect(first.importedThreadIds).toEqual(["thread-once"]);
-    expect(second.importedThreadIds).toEqual([]);
-    expect(second.createdProjectIds).toEqual([]);
-    expect(second.skippedExistingCount).toBe(1);
+    expect(second.skippedReason).toMatch(/unchanged/);
+    expect(third.importedThreadIds).toEqual([]);
+    expect(third.appendedThreadIds).toEqual([]);
+    expect(third.createdProjectIds).toEqual([]);
+    expect(third.skippedExistingCount).toBe(1);
     expect(await eventCount(target)).toBe(eventsAfterFirst);
+  });
+
+  it("skips an unchanged source before copying and runs again once it changes", async () => {
+    const workspaceRoot = makeTempDir("synara-workspace-");
+    const source = await openHome();
+    await createProject(source, "project-source", workspaceRoot);
+    await createThread(source, { id: "thread-first", projectId: "project-source" });
+    await source.close();
+    const target = await openHome();
+
+    expect((await runImport(target, source.baseDir)).importedThreadIds).toEqual(["thread-first"]);
+    const stamp = fs.readFileSync(stampPath(target), "utf8");
+    expect(JSON.parse(stamp)).toMatchObject({
+      version: 1,
+      sourceDbPath: synaraHomeDbPath(source.baseDir),
+    });
+    const unchanged = await runImport(target, source.baseDir);
+    expect(unchanged.skippedReason).toMatch(/unchanged/);
+    expect(stagingDirs(target)).toEqual([]);
+
+    const reopened = await openHome(source.baseDir);
+    await createThread(reopened, { id: "thread-second", projectId: "project-source" });
+    await reopened.close();
+    const changed = await runImport(target, source.baseDir);
+    expect(changed.importedThreadIds).toEqual(["thread-second"]);
+    expect(fs.readFileSync(stampPath(target), "utf8")).not.toBe(stamp);
+  });
+
+  it("writes a result file only for runs that brought threads over, adding up unread runs", async () => {
+    const workspaceRoot = makeTempDir("synara-workspace-");
+    const source = await openHome();
+    await createProject(source, "project-source", workspaceRoot);
+    await createThread(source, { id: "thread-a", projectId: "project-source" });
+    await createThread(source, { id: "thread-b", projectId: "project-source" });
+    const target = await openHome();
+
+    await runImport(target, source);
+    expect(readResult(target)).toMatchObject({ version: 1, imported: 2, appended: 0 });
+    expect(typeof readResult(target).completedAt).toBe("string");
+
+    await createThread(source, { id: "thread-c", projectId: "project-source" });
+    await runImport(target, source);
+    expect(readResult(target)).toMatchObject({ version: 1, imported: 3, appended: 0 });
+
+    fs.rmSync(resultPath(target));
+    fs.rmSync(stampPath(target));
+    await runImport(target, source);
+    expect(fs.existsSync(resultPath(target))).toBe(false);
+  });
+
+  it("appends source messages to an imported thread the target never used", async () => {
+    const workspaceRoot = makeTempDir("synara-workspace-");
+    const source = await openHome();
+    await createProject(source, "project-source", workspaceRoot);
+    for (const id of ["thread-idle", "thread-used"]) {
+      await createThread(source, {
+        id,
+        projectId: "project-source",
+        messages: [{ id: `${id}-first`, role: "user", text: "first" }],
+      });
+    }
+    const target = await openHome();
+    await runImport(target, source);
+    fs.rmSync(resultPath(target));
+    // The target writes into one of the imported threads.
+    await target.dispatch({
+      type: "thread.messages.import",
+      commandId: commandId(),
+      threadId: ThreadId.makeUnsafe("thread-used"),
+      messages: [
+        {
+          messageId: MessageId.makeUnsafe("thread-used-native"),
+          role: "user",
+          text: "written in the target",
+          createdAt: "2026-01-03T00:00:00.000Z",
+          updatedAt: "2026-01-03T00:00:00.000Z",
+        },
+      ],
+      createdAt: "2026-01-03T00:00:00.000Z",
+    });
+    // Both conversations go on in the source home.
+    for (const id of ["thread-idle", "thread-used"]) {
+      await source.dispatch({
+        type: "thread.messages.import",
+        commandId: commandId(),
+        threadId: ThreadId.makeUnsafe(id),
+        messages: [
+          {
+            messageId: MessageId.makeUnsafe(`${id}-later`),
+            role: "assistant",
+            text: "continued in the source",
+            createdAt: "2026-01-04T00:00:00.000Z",
+            updatedAt: "2026-01-04T00:00:00.000Z",
+          },
+        ],
+        createdAt: "2026-01-04T00:00:00.000Z",
+      });
+    }
+
+    const result = await runImport(target, source);
+
+    expect(result.importedThreadIds).toEqual([]);
+    expect(result.appendedThreadIds).toEqual(["thread-idle"]);
+    expect(readResult(target)).toMatchObject({ imported: 0, appended: 1 });
+    const idle = await readThread(target, "thread-idle");
+    expect(idle._tag === "Some" && idle.value.messages.map((message) => message.id)).toEqual([
+      "thread-idle-first",
+      "thread-idle-later",
+    ]);
+    const used = await readThread(target, "thread-used");
+    expect(used._tag === "Some" && used.value.messages.map((message) => message.id)).toEqual([
+      "thread-used-first",
+      "thread-used-native",
+    ]);
+
+    fs.rmSync(stampPath(target));
+    expect((await runImport(target, source)).appendedThreadIds).toEqual([]);
   });
 
   it("does not resurrect a thread the target deleted", async () => {

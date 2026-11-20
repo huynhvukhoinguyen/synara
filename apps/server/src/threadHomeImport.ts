@@ -25,6 +25,17 @@
 // appears in this store's event log, its projections, or the purged-thread
 // tombstones, so deleted threads are never resurrected and a second run adds
 // nothing.
+//
+// A thread this store took from an earlier import and has not touched since (no
+// turn, no session, no message of its own) also receives the source messages
+// it lacks, so a conversation that went on in the source home stays current.
+// Any thread with local activity is left alone.
+//
+// Lattice sets the variable on every launch, so the source is stamped: the size
+// and mtime of its database and WAL plus the WAL header salts. A run that
+// finished cleanly records the stamp, and the next start skips the copy while
+// the stamp still matches. A run that brought anything over writes
+// thread-home-import-result.json for the host to show and delete.
 
 import { join, resolve } from "node:path";
 
@@ -48,6 +59,16 @@ import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnap
 import { makeSqlitePersistenceLive } from "./persistence/Layers/Sqlite.ts";
 
 export const SYNARA_IMPORT_THREADS_FROM_HOME_ENV = "SYNARA_IMPORT_THREADS_FROM_HOME";
+/** In the target state dir: the source stamp of the last clean run. */
+export const THREAD_HOME_IMPORT_STAMP_FILE_NAME = "thread-home-import-stamp.json";
+/**
+ * In the target state dir, written after a run that brought threads over:
+ * { version: 1, completedAt, imported, appended }. The host reads and deletes it;
+ * counts from runs it has not consumed yet are added up.
+ */
+export const THREAD_HOME_IMPORT_RESULT_FILE_NAME = "thread-home-import-result.json";
+
+const IMPORT_COMMAND_ID_PREFIX = "thread-home-import:";
 
 class ThreadHomeImportError extends Data.TaggedError("ThreadHomeImportError")<{
   readonly message: string;
@@ -59,6 +80,7 @@ const MESSAGE_IMPORT_BATCH_SIZE = 200;
 
 export interface ThreadHomeImportResult {
   readonly importedThreadIds: ReadonlyArray<ThreadId>;
+  readonly appendedThreadIds: ReadonlyArray<ThreadId>;
   readonly createdProjectIds: ReadonlyArray<ProjectId>;
   readonly skippedExistingCount: number;
   readonly failedThreadIds: ReadonlyArray<ThreadId>;
@@ -67,13 +89,15 @@ export interface ThreadHomeImportResult {
 
 const skippedImport = (skippedReason: string): ThreadHomeImportResult => ({
   importedThreadIds: [],
+  appendedThreadIds: [],
   createdProjectIds: [],
   skippedExistingCount: 0,
   failedThreadIds: [],
   skippedReason,
 });
 
-const newCommandId = () => CommandId.makeUnsafe(`thread-home-import:${crypto.randomUUID()}`);
+const newCommandId = () =>
+  CommandId.makeUnsafe(`${IMPORT_COMMAND_ID_PREFIX}${crypto.randomUUID()}`);
 
 // Sidechats expire with their source conversation and hold no history of their
 // own worth keeping, so they stay behind.
@@ -127,6 +151,69 @@ const copyMessageAttachments = Effect.fnUntraced(function* (input: {
   }
 });
 
+/**
+ * Identifies the source database state without opening it: a checkpoint
+ * changes the main file, an append changes the WAL, a WAL restart its salts.
+ */
+const readSourceStamp = Effect.fnUntraced(function* (sourceDbPath: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const walPath = `${sourceDbPath}-wal`;
+  const describeFile = (path: string) =>
+    fs.stat(path).pipe(
+      Effect.map((info) => ({
+        size: String(info.size),
+        mtimeMs: info.mtime?.getTime() ?? null,
+      })),
+      Effect.orElseSucceed(() => null),
+    );
+  const walSalts = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const wal = yield* fs.open(walPath, { flag: "r" });
+      const header = yield* wal.readAlloc(32);
+      return header && header.length >= 24
+        ? Buffer.from(header.subarray(16, 24)).toString("hex")
+        : null;
+    }),
+  ).pipe(Effect.orElseSucceed(() => null));
+  return JSON.stringify({
+    version: 1,
+    sourceDbPath,
+    main: yield* describeFile(sourceDbPath),
+    wal: yield* describeFile(walPath),
+    walSalts,
+  });
+});
+
+const writeFileAtomic = Effect.fnUntraced(function* (path: string, contents: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const temporaryPath = `${path}.tmp-${process.pid}`;
+  yield* fs.writeFileString(temporaryPath, contents);
+  yield* fs.rename(temporaryPath, path);
+});
+
+/** Adds this run's counts to a result file the host has not consumed yet. */
+const recordImportResult = Effect.fnUntraced(function* (input: {
+  readonly path: string;
+  readonly imported: number;
+  readonly appended: number;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const previous = yield* fs.readFileString(input.path).pipe(
+    Effect.map((text) => JSON.parse(text) as { imported?: unknown; appended?: unknown }),
+    Effect.orElseSucceed((): { imported?: unknown; appended?: unknown } => ({})),
+  );
+  const count = (value: unknown) => (typeof value === "number" && value >= 0 ? value : 0);
+  yield* writeFileAtomic(
+    input.path,
+    `${JSON.stringify({
+      version: 1,
+      completedAt: new Date().toISOString(),
+      imported: count(previous.imported) + input.imported,
+      appended: count(previous.appended) + input.appended,
+    })}\n`,
+  );
+});
+
 export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function* (input: {
   readonly sourceHomeDir: string;
   readonly targetBaseDir: string;
@@ -144,6 +231,12 @@ export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function
   }
   if ((yield* fs.realPath(sourceHomeDir)) === (yield* fs.realPath(input.targetBaseDir))) {
     return skippedImport("source home is this server's own home");
+  }
+  const stampPath = join(input.targetStateDir, THREAD_HOME_IMPORT_STAMP_FILE_NAME);
+  const stampBefore = yield* readSourceStamp(sourceDbPath);
+  const recordedStamp = yield* fs.readFileString(stampPath).pipe(Effect.orElseSucceed(() => null));
+  if (recordedStamp === stampBefore) {
+    return skippedImport("source unchanged since the last import");
   }
 
   const engine = yield* OrchestrationEngineService;
@@ -196,9 +289,41 @@ export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function
     .filter(isImportableSourceThread)
     .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
   const missing: Array<OrchestrationThread> = [];
+  const known: Array<OrchestrationThread> = [];
   for (const thread of candidates) {
-    if (!(yield* threadIdKnown(thread.id))) missing.push(thread);
+    if (yield* threadIdKnown(thread.id)) known.push(thread);
+    else missing.push(thread);
   }
+
+  // Created by an earlier import and untouched here since: no turn, no
+  // session, no message that did not come from an import, not deleted.
+  const importedAndUntouched = (threadId: ThreadId) =>
+    sql<{ readonly imported: number; readonly touched: number }>`
+      SELECT
+        EXISTS (
+          SELECT 1 FROM orchestration_events
+          WHERE aggregate_kind = 'thread' AND stream_id = ${threadId}
+            AND event_type = 'thread.created'
+            AND command_id LIKE ${`${IMPORT_COMMAND_ID_PREFIX}%`}
+        ) AS imported,
+        EXISTS (
+          SELECT 1 FROM orchestration_events
+          WHERE aggregate_kind = 'thread' AND stream_id = ${threadId}
+            AND (
+              event_type LIKE 'thread.turn-%'
+              OR event_type IN ('thread.session-set', 'thread.deleted')
+              OR (
+                event_type = 'thread.message-sent'
+                AND (command_id IS NULL OR command_id NOT LIKE ${`${IMPORT_COMMAND_ID_PREFIX}%`})
+              )
+            )
+        ) AS touched
+    `.pipe(Effect.map((rows) => rows[0]?.imported === 1 && rows[0]?.touched === 0));
+  const targetMessageIds = (threadId: ThreadId) =>
+    sql<{ readonly messageId: string }>`
+      SELECT message_id AS "messageId" FROM projection_thread_messages
+      WHERE thread_id = ${threadId}
+    `.pipe(Effect.map((rows) => new Set(rows.map((row) => row.messageId))));
 
   const sourceProjects = new Map(sourceModel.projects.map((project) => [project.id, project]));
   const targetProjectIds = new Map<ProjectId, ProjectId>();
@@ -238,6 +363,41 @@ export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function
     targetProjectIds.set(sourceProject.id, projectId);
     createdProjectIds.push(projectId);
     return projectId;
+  });
+
+  const importMessages = Effect.fnUntraced(function* (
+    thread: OrchestrationThread,
+    messages: ReadonlyArray<ThreadHandoffImportedMessage>,
+  ) {
+    yield* copyMessageAttachments({
+      messages,
+      sourceAttachmentsDir: join(sourceStateDir, "attachments"),
+      targetAttachmentsDir: input.targetAttachmentsDir,
+    });
+    for (let start = 0; start < messages.length; start += MESSAGE_IMPORT_BATCH_SIZE) {
+      yield* engine.dispatch({
+        type: "thread.messages.import",
+        commandId: newCommandId(),
+        threadId: thread.id,
+        messages: messages.slice(start, start + MESSAGE_IMPORT_BATCH_SIZE),
+        // The source thread's last activity time keeps imported threads in
+        // their place in recency-sorted lists.
+        createdAt: thread.updatedAt,
+      });
+    }
+  });
+
+  const appendToImportedThread = Effect.fnUntraced(function* (shell: OrchestrationThread) {
+    if (!(yield* importedAndUntouched(shell.id))) return false;
+    const detail = yield* sourceQuery.getThreadDetailForExportById(shell.id);
+    if (Option.isNone(detail)) return false;
+    const present = yield* targetMessageIds(shell.id);
+    const messages = toImportedMessages(detail.value).filter(
+      (message) => !present.has(message.messageId),
+    );
+    if (messages.length === 0) return false;
+    yield* importMessages(detail.value, messages);
+    return true;
   });
 
   const importThread = Effect.fnUntraced(function* (shell: OrchestrationThread) {
@@ -281,23 +441,7 @@ export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function
       createdAt: thread.createdAt,
     });
 
-    const messages = toImportedMessages(thread);
-    yield* copyMessageAttachments({
-      messages,
-      sourceAttachmentsDir: join(sourceStateDir, "attachments"),
-      targetAttachmentsDir: input.targetAttachmentsDir,
-    });
-    for (let start = 0; start < messages.length; start += MESSAGE_IMPORT_BATCH_SIZE) {
-      yield* engine.dispatch({
-        type: "thread.messages.import",
-        commandId: newCommandId(),
-        threadId: thread.id,
-        messages: messages.slice(start, start + MESSAGE_IMPORT_BATCH_SIZE),
-        // The source thread's last activity time keeps imported threads in
-        // their place in recency-sorted lists.
-        createdAt: thread.updatedAt,
-      });
-    }
+    yield* importMessages(thread, toImportedMessages(thread));
     if (thread.archivedAt) {
       yield* engine.dispatch({
         type: "thread.archive",
@@ -323,9 +467,36 @@ export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function
     if (imported === true) importedThreadIds.push(thread.id);
     else if (imported === null) failedThreadIds.push(thread.id);
   }
+  const appendedThreadIds: Array<ThreadId> = [];
+  for (const thread of known) {
+    const appended = yield* appendToImportedThread(thread).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("thread home import could not append to a thread", {
+          threadId: thread.id,
+          cause,
+        }).pipe(Effect.as(null)),
+      ),
+    );
+    if (appended === true) appendedThreadIds.push(thread.id);
+    else if (appended === null) failedThreadIds.push(thread.id);
+  }
+
+  if (importedThreadIds.length > 0 || appendedThreadIds.length > 0) {
+    yield* recordImportResult({
+      path: join(input.targetStateDir, THREAD_HOME_IMPORT_RESULT_FILE_NAME),
+      imported: importedThreadIds.length,
+      appended: appendedThreadIds.length,
+    });
+  }
+  // Stamp only a clean run over a source that held still during the copy;
+  // anything else runs again on the next start.
+  if (failedThreadIds.length === 0 && (yield* readSourceStamp(sourceDbPath)) === stampBefore) {
+    yield* writeFileAtomic(stampPath, stampBefore);
+  }
 
   return {
     importedThreadIds,
+    appendedThreadIds,
     createdProjectIds,
     skippedExistingCount: candidates.length - missing.length,
     failedThreadIds,
