@@ -283,6 +283,25 @@ describe("importThreadsFromHome", () => {
     });
     const archived = await readThread(target, "thread-archived");
     expect(archived._tag === "Some" && archived.value.handoff).toBeNull();
+    // The thread list orders and dates threads by these, so they must be the
+    // source's own times, not the import time.
+    const sourceArchived = await readThread(source, "thread-archived");
+    if (sourceThread._tag !== "Some" || sourceArchived._tag !== "Some")
+      throw new Error("no source");
+    expect(imported.value.updatedAt).toBe(sourceThread.value.updatedAt);
+    expect(archived._tag === "Some" && archived.value.updatedAt).toBe(
+      sourceArchived.value.updatedAt,
+    );
+    expect(archived._tag === "Some" && archived.value.archivedAt).toBe(
+      sourceArchived.value.archivedAt,
+    );
+    const shells = await listThreads(target);
+    const sourceShells = await listThreads(source);
+    for (const id of ["thread-live", "thread-archived"]) {
+      expect(shells.find((thread) => thread.id === id)?.updatedAt).toBe(
+        sourceShells.find((thread) => thread.id === id)?.updatedAt,
+      );
+    }
 
     const threads = await listThreads(target);
     expect(threads.find((thread) => thread.id === "thread-archived")?.archivedAt).not.toBeNull();

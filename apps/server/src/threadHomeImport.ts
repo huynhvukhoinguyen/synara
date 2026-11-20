@@ -44,6 +44,7 @@ import {
   ProjectId,
   type OrchestrationProject,
   type OrchestrationThread,
+  type ThreadHandoff,
   type ThreadHandoffImportedMessage,
   type ThreadId,
 } from "@synara/contracts";
@@ -388,9 +389,20 @@ export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function
     return targetProjectId;
   });
 
+  // A pending handoff makes the reactor replay the imported rows into the first
+  // turn and then mark it completed.
+  const pendingHandoff = (thread: OrchestrationThread): ThreadHandoff => ({
+    sourceThreadId: thread.id,
+    sourceProvider: thread.modelSelection.provider,
+    importedAt: new Date().toISOString(),
+    bootstrapStatus: "pending",
+    origin: "home-import",
+  });
+
   const importMessages = Effect.fnUntraced(function* (
     thread: OrchestrationThread,
     messages: ReadonlyArray<ThreadHandoffImportedMessage>,
+    handoff?: ThreadHandoff,
   ) {
     yield* copyMessageAttachments({
       messages,
@@ -398,44 +410,19 @@ export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function
       targetAttachmentsDir: input.targetAttachmentsDir,
     });
     for (let start = 0; start < messages.length; start += MESSAGE_IMPORT_BATCH_SIZE) {
+      const isLastBatch = start + MESSAGE_IMPORT_BATCH_SIZE >= messages.length;
       yield* engine.dispatch({
         type: "thread.messages.import",
         commandId: newCommandId(),
         threadId: thread.id,
         messages: messages.slice(start, start + MESSAGE_IMPORT_BATCH_SIZE),
         source: "handoff-import",
+        ...(handoff && isLastBatch ? { handoff } : {}),
         // The source thread's last activity time keeps imported threads in
         // their place in recency-sorted lists.
         createdAt: thread.updatedAt,
       });
     }
-  });
-
-  // A pending handoff makes the reactor replay the imported rows into the first
-  // turn and then mark it completed. Rows imported before this source existed
-  // are "native" and never replay, so such a thread gets no handoff.
-  const markPendingHandoff = Effect.fnUntraced(function* (thread: OrchestrationThread) {
-    const target = (yield* engine.getReadModel()).threads.find(
-      (candidate) => candidate.id === thread.id,
-    );
-    if (!target || target.handoff !== null) return;
-    const replayable = target.messages.filter(
-      (message) => message.role === "user" || message.role === "assistant",
-    );
-    if (replayable.length === 0) return;
-    if (replayable.some((message) => message.source !== "handoff-import")) return;
-    yield* engine.dispatch({
-      type: "thread.meta.update",
-      commandId: newCommandId(),
-      threadId: thread.id,
-      handoff: {
-        sourceThreadId: thread.id,
-        sourceProvider: thread.modelSelection.provider,
-        importedAt: new Date().toISOString(),
-        bootstrapStatus: "pending",
-        origin: "home-import",
-      },
-    });
   });
 
   const appendToImportedThread = Effect.fnUntraced(function* (shell: OrchestrationThread) {
@@ -447,8 +434,25 @@ export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function
       (message) => !present.has(message.messageId),
     );
     if (messages.length === 0) return false;
-    yield* importMessages(detail.value, messages);
-    yield* markPendingHandoff(detail.value);
+    // Rows imported before the handoff-import source existed are "native" and
+    // never replay, so such a thread gets no handoff. One already set, pending
+    // or completed, is left as it is.
+    const target = (yield* engine.getReadModel()).threads.find(
+      (candidate) => candidate.id === shell.id,
+    );
+    const replaysEveryRow =
+      target !== undefined &&
+      target.handoff === null &&
+      target.messages.every(
+        (message) =>
+          (message.role !== "user" && message.role !== "assistant") ||
+          message.source === "handoff-import",
+      );
+    yield* importMessages(
+      detail.value,
+      messages,
+      replaysEveryRow ? pendingHandoff(detail.value) : undefined,
+    );
     return true;
   });
 
@@ -493,13 +497,13 @@ export const importThreadsFromHome = Effect.fn("importThreadsFromHome")(function
       createdAt: thread.createdAt,
     });
 
-    yield* importMessages(thread, toImportedMessages(thread));
-    yield* markPendingHandoff(thread);
+    yield* importMessages(thread, toImportedMessages(thread), pendingHandoff(thread));
     if (thread.archivedAt) {
       yield* engine.dispatch({
         type: "thread.archive",
         commandId: newCommandId(),
         threadId: thread.id,
+        archivedAt: thread.archivedAt,
       });
     }
     return true;

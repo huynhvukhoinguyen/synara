@@ -1889,7 +1889,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         command,
         threadId: command.threadId,
       });
-      const occurredAt = nowIso();
+      const occurredAt = command.archivedAt ?? nowIso();
       // Subagent threads are only reachable through their parent, so archiving a
       // thread archives its still-active subagent subtree with it. The commanded
       // thread goes last: the command receipt records the final event's aggregate.
@@ -3330,30 +3330,50 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         command,
         threadId: command.threadId,
       });
-      return command.messages.map((message) => ({
-        ...withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt: command.createdAt,
-          commandId: command.commandId,
+      const messageEvents: Array<Omit<OrchestrationEvent, "sequence">> = command.messages.map(
+        (message) => ({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.message-sent" as const,
+          payload: {
+            threadId: command.threadId,
+            messageId: message.messageId,
+            role: message.role,
+            text: message.text,
+            ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+            ...(message.dispatchOrigin !== undefined
+              ? { dispatchOrigin: message.dispatchOrigin }
+              : {}),
+            turnId: null,
+            streaming: false,
+            source: command.source ?? ("native" as const),
+            createdAt: message.createdAt,
+            updatedAt: message.updatedAt,
+          },
         }),
-        type: "thread.message-sent" as const,
-        payload: {
-          threadId: command.threadId,
-          messageId: message.messageId,
-          role: message.role,
-          text: message.text,
-          ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-          ...(message.dispatchOrigin !== undefined
-            ? { dispatchOrigin: message.dispatchOrigin }
-            : {}),
-          turnId: null,
-          streaming: false,
-          source: command.source ?? ("native" as const),
-          createdAt: message.createdAt,
-          updatedAt: message.updatedAt,
+      );
+      if (command.handoff === undefined) return messageEvents;
+      return [
+        ...messageEvents,
+        {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.meta-updated",
+          payload: {
+            threadId: command.threadId,
+            handoff: command.handoff,
+            updatedAt: command.createdAt,
+          },
         },
-      }));
+      ];
     }
 
     case "thread.message.assistant.delta": {

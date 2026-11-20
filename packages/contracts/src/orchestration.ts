@@ -1671,6 +1671,8 @@ const ThreadArchiveCommand = Schema.Struct({
   type: Schema.Literal("thread.archive"),
   commandId: CommandId,
   threadId: ThreadId,
+  /** When the thread was archived; an import carries the source's time. Omitted = now. */
+  archivedAt: Schema.optional(IsoDateTime),
 });
 
 const ThreadUnarchiveCommand = Schema.Struct({
@@ -2182,6 +2184,9 @@ const ThreadMessagesImportCommand = Schema.Struct({
   // "handoff-import" marks the rows as earlier transcript that a pending
   // thread handoff bootstraps into the first new turn. Omitted = "native".
   source: Schema.optional(Schema.Literal("handoff-import")),
+  // Recorded with the rows at createdAt, so an import keeps the source
+  // thread's last-activity time instead of taking the import time.
+  handoff: Schema.optional(ThreadHandoff),
   createdAt: IsoDateTime,
 });
 
