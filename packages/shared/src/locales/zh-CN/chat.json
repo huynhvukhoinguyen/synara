@@ -1015,6 +1015,7 @@
   "claudeArtifactsUnavailable": "此 Claude 账户或版本无法使用产物功能。",
   "claudeArtifactsUnavailableDetail": "产物功能已开启，但 Claude 未在此会话中启用。此功能需要使用 Pro、Max、Team 或 Enterprise 套餐的 claude.ai 账户登录，以及 Claude Code 2.1.234 或更高版本。",
   "handoffFromProvider": "从 {{provider}} 移交",
+  "importedFromClassicApp": "从经典版导入",
   "claudeArtifactsOffDetail": "/{{command}} 需要 Claude 产物功能，此功能在 Synara 会话中默认关闭。请在“设置 → 提供商 → Claude”中开启“产物、/design 和 /slides”，然后启动新会话。",
   "pastedText": "粘贴的文本",
   "pastedTextLines_one": "{{formattedCount}} 行",

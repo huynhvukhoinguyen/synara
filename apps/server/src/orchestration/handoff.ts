@@ -239,7 +239,10 @@ export function buildHandoffBootstrapText(
     buildImportedMessagesBootstrap({
       thread,
       importedMessages,
-      intro: `This conversation was handed off from ${thread.handoff.sourceProvider}.`,
+      intro:
+        thread.handoff.origin === "home-import"
+          ? `This conversation was imported from an earlier Synara history, where it ran on ${thread.handoff.sourceProvider}.`
+          : `This conversation was handed off from ${thread.handoff.sourceProvider}.`,
       maxChars,
     })?.text ?? null
   );

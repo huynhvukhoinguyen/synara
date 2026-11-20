@@ -8,6 +8,7 @@ import {
   DEFAULT_RUNTIME_MODE,
   ModelSelection,
   OrchestrationCommand,
+  OrchestrationEvent,
   OrchestrationGetTurnDiffInput,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
@@ -826,6 +827,55 @@ it.effect("ThreadHandoff decodes legacy provider names instead of failing the ro
     });
     assert.equal(current.sourceProvider, "codex");
   }),
+);
+
+it.effect(
+  "decodes stored handoffs, imports and message rows written before the import source",
+  () =>
+    Effect.gen(function* () {
+      const handoff = yield* decodeThreadHandoff({
+        sourceThreadId: "thread-src",
+        sourceProvider: "codex",
+        importedAt: "2026-01-01T00:00:00Z",
+        bootstrapStatus: "pending",
+      });
+      assert.equal(handoff.origin, undefined);
+      const imported = yield* decodeThreadHandoff({ ...handoff, origin: "home-import" });
+      assert.equal(imported.origin, "home-import");
+
+      const command = yield* Schema.decodeUnknownEffect(OrchestrationCommand)({
+        type: "thread.messages.import",
+        commandId: "cmd-import",
+        threadId: "thread-1",
+        messages: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      assert.equal(command.type === "thread.messages.import" && command.source, undefined);
+
+      const event = yield* Schema.decodeUnknownEffect(OrchestrationEvent)({
+        sequence: 1,
+        eventId: "event-1",
+        aggregateKind: "thread",
+        aggregateId: "thread-1",
+        occurredAt: "2026-01-01T00:00:00Z",
+        commandId: "cmd-import",
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.message-sent",
+        payload: {
+          threadId: "thread-1",
+          messageId: "message-1",
+          role: "user",
+          text: "hello",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      });
+      assert.equal(event.type === "thread.message-sent" && event.payload.source, "native");
+    }),
 );
 
 it.effect("preserves optional empty thread shell verification across versions", () =>

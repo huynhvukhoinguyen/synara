@@ -3349,7 +3349,7 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
             : {}),
           turnId: null,
           streaming: false,
-          source: "native" as const,
+          source: command.source ?? ("native" as const),
           createdAt: message.createdAt,
           updatedAt: message.updatedAt,
         },

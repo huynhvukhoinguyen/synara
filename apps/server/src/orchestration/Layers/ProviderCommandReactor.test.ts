@@ -29433,8 +29433,11 @@ describe("ProviderCommandReactor", () => {
     );
     expect(deliveryRows.map((row) => [row.threadId, row.eventType, row.state])).toEqual([
       ["imported-archived", "thread.created", "succeeded"],
+      // The pending import handoff: a title-less meta update never reaches setThreadName.
+      ["imported-archived", "thread.meta-updated", "succeeded"],
       ["imported-archived", "thread.archived", "succeeded"],
       ["imported-live", "thread.created", "succeeded"],
+      ["imported-live", "thread.meta-updated", "succeeded"],
     ]);
     const imported = await harness.runtime.runPromise(
       harness.projectionSnapshotQuery.getThreadDetailById(ThreadId.makeUnsafe("imported-live")),
@@ -29452,7 +29455,18 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === callsBefore.sendTurn! + 1);
     const input = harness.sendTurn.mock.calls.at(-1)?.[0] as { input?: string } | undefined;
     expect(input?.input).toContain("Continue in native");
+    // The pending import handoff replays the earlier transcript once.
+    expect(input?.input).toContain("<handoff_context>");
+    expect(input?.input).toContain("imported from an earlier Synara history");
+    expect(input?.input).toContain("Earlier classic question");
+    expect(input?.input).toContain("Earlier classic answer");
     expect(harness.startSessionWithOutcome.mock.calls.at(-1)?.[0]).toBe("imported-live");
+    await waitFor(async () => {
+      const thread = await harness.runtime.runPromise(
+        harness.projectionSnapshotQuery.getThreadDetailById(ThreadId.makeUnsafe("imported-live")),
+      );
+      return Option.getOrNull(thread)?.handoff?.bootstrapStatus === "completed";
+    });
   });
 });
 

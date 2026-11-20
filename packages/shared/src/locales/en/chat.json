@@ -1015,6 +1015,7 @@
   "claudeArtifactsUnavailable": "Artifacts are unavailable for this Claude account or version.",
   "claudeArtifactsUnavailableDetail": "Artifacts are on but Claude did not enable them for this session. They need a claude.ai login on a Pro, Max, Team or Enterprise plan and Claude Code 2.1.234 or later.",
   "handoffFromProvider": "Handoff from {{provider}}",
+  "importedFromClassicApp": "Imported from the classic app",
   "claudeArtifactsOffDetail": "/{{command}} needs Claude Artifacts, which are off in Synara sessions by default. Turn on \"Artifacts, /design and /slides\" in Settings → Providers → Claude, then start a new session.",
   "pastedText": "Pasted text",
   "pastedTextLines_one": "{{formattedCount}} line",

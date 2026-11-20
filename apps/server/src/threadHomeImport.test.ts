@@ -271,6 +271,18 @@ describe("importThreadsFromHome", () => {
       fs.readFileSync(nodePath.join(target.config.attachmentsDir, `${attachmentId}.png`), "utf8"),
     ).toBe("png!");
     expect(imported.value.session).toBeNull();
+    // The rows replay into the first new turn through a pending handoff.
+    expect(new Set(imported.value.messages.map((message) => message.source))).toEqual(
+      new Set(["handoff-import"]),
+    );
+    expect(imported.value.handoff).toMatchObject({
+      sourceThreadId: "thread-live",
+      sourceProvider: "claudeAgent",
+      bootstrapStatus: "pending",
+      origin: "home-import",
+    });
+    const archived = await readThread(target, "thread-archived");
+    expect(archived._tag === "Some" && archived.value.handoff).toBeNull();
 
     const threads = await listThreads(target);
     expect(threads.find((thread) => thread.id === "thread-archived")?.archivedAt).not.toBeNull();
@@ -457,6 +469,101 @@ describe("importThreadsFromHome", () => {
 
     fs.rmSync(stampPath(target));
     expect((await runImport(target, source)).appendedThreadIds).toEqual([]);
+  });
+
+  it("gives appended threads a pending handoff only when every row can replay, never resetting one", async () => {
+    const workspaceRoot = makeTempDir("synara-workspace-");
+    const source = await openHome();
+    await createProject(source, "project-source", workspaceRoot);
+    for (const id of ["thread-empty", "thread-bootstrapped", "thread-older-build"]) {
+      await createThread(source, {
+        id,
+        projectId: "project-source",
+        ...(id === "thread-empty"
+          ? {}
+          : { messages: [{ id: `${id}-first`, role: "user" as const, text: "first" }] }),
+      });
+    }
+    const target = await openHome();
+    await createProject(target, "project-source", workspaceRoot);
+    // An import from before this source existed: same command prefix, "native" rows.
+    await target.dispatch({
+      type: "thread.create",
+      commandId: CommandId.makeUnsafe("thread-home-import:older-build"),
+      threadId: ThreadId.makeUnsafe("thread-older-build"),
+      projectId: ProjectId.makeUnsafe("project-source"),
+      title: "Older build",
+      modelSelection,
+      runtimeMode: "approval-required",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      branch: null,
+      worktreePath: null,
+      createdAt,
+    });
+    await target.dispatch({
+      type: "thread.messages.import",
+      commandId: CommandId.makeUnsafe("thread-home-import:older-build-messages"),
+      threadId: ThreadId.makeUnsafe("thread-older-build"),
+      messages: [
+        {
+          messageId: MessageId.makeUnsafe("thread-older-build-first"),
+          role: "user",
+          text: "first",
+          createdAt,
+          updatedAt: createdAt,
+        },
+      ],
+      createdAt,
+    });
+    await runImport(target, source);
+    const empty = await readThread(target, "thread-empty");
+    expect(empty._tag === "Some" && empty.value.handoff).toBeNull();
+    const pending = await readThread(target, "thread-bootstrapped");
+    if (pending._tag !== "Some" || pending.value.handoff === null) throw new Error("no handoff");
+    const completed = { ...pending.value.handoff, bootstrapStatus: "completed" as const };
+    await target.dispatch({
+      type: "thread.meta.update",
+      commandId: commandId(),
+      threadId: ThreadId.makeUnsafe("thread-bootstrapped"),
+      handoff: completed,
+    });
+    for (const id of ["thread-empty", "thread-bootstrapped", "thread-older-build"]) {
+      await source.dispatch({
+        type: "thread.messages.import",
+        commandId: commandId(),
+        threadId: ThreadId.makeUnsafe(id),
+        messages: [
+          {
+            messageId: MessageId.makeUnsafe(`${id}-later`),
+            role: "assistant",
+            text: "continued in the source",
+            createdAt: "2026-01-04T00:00:00.000Z",
+            updatedAt: "2026-01-04T00:00:00.000Z",
+          },
+        ],
+        createdAt: "2026-01-04T00:00:00.000Z",
+      });
+    }
+
+    const result = await runImport(target, source);
+
+    expect(result.appendedThreadIds.toSorted()).toEqual([
+      "thread-bootstrapped",
+      "thread-empty",
+      "thread-older-build",
+    ]);
+    const appendedEmpty = await readThread(target, "thread-empty");
+    expect(appendedEmpty._tag === "Some" && appendedEmpty.value.handoff).toMatchObject({
+      bootstrapStatus: "pending",
+      origin: "home-import",
+    });
+    const bootstrapped = await readThread(target, "thread-bootstrapped");
+    expect(bootstrapped._tag === "Some" && bootstrapped.value.handoff).toEqual(completed);
+    const olderBuild = await readThread(target, "thread-older-build");
+    expect(olderBuild._tag === "Some" && olderBuild.value.handoff).toBeNull();
+    expect(
+      olderBuild._tag === "Some" && olderBuild.value.messages.map((message) => message.source),
+    ).toEqual(["native", "handoff-import"]);
   });
 
   it("does not resurrect a thread the target deleted", async () => {
