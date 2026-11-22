@@ -6217,6 +6217,16 @@ html[data-synara-embed="true"] :is(.chat-composer-surface, .chat-composer-menu-s
   color: var(--color-text-foreground);
 }
 
+/* The embedded composer keeps round corners in both layouts. WebKit on macOS 27.3
+   paints squircle corners (`corner-shape`, new to WebKit) on the full box over its
+   backdrop-filter pseudo-element as nothing at all: the box keeps its layout and
+   draws no text, caret or Send button until the draft collapses back to the pill,
+   which already sets `corner-shape: round` (lattice-writer/lattice#1227). Every
+   WKWebView without `corner-shape` already draws these corners round. */
+html[data-synara-embed="true"] :is(.chat-composer-shell, .chat-composer-surface) {
+  corner-shape: round;
+}
+
 /* Frosted translucent shell shared by floating menus & pickers (dropdown menus,
    selects, popovers, comboboxes) and composer pickers. Background + blur are
    theme-aware via the tokens set in theme.logic (control-opaque @70% + blur). */
