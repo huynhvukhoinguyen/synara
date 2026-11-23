@@ -17,6 +17,7 @@ it.each([false, true])(
     await page.viewport(1280, 800);
     const onReload = vi.fn();
     const onClose = vi.fn();
+    const onDiffWordWrapChange = vi.fn();
     const client = new QueryClient();
     client.setQueryData(gitQueryKeys.branches("/fixture"), {
       isRepo: true,
@@ -65,6 +66,7 @@ it.each([false, true])(
             resolvedTheme="light"
             diffRenderMode="split"
             diffWordWrap={false}
+            diffWordWrapShortcutLabel="⌥Z"
             diffIgnoreWhitespace={false}
             diffCopyText={null}
             diffCopyLabel="Copy diff"
@@ -89,7 +91,7 @@ it.each([false, true])(
             onSelectFile={noop}
             onToggleFileTree={noop}
             onDiffRenderModeChange={noop}
-            onDiffWordWrapChange={noop}
+            onDiffWordWrapChange={onDiffWordWrapChange}
             onDiffIgnoreWhitespaceChange={noop}
             onCopyDiff={noop}
             onReload={onReload}
@@ -107,6 +109,11 @@ it.each([false, true])(
     await expect.element(page.getByRole("button", { name: "Previous change" })).toBeDisabled();
     await page.getByRole("button", { name: "Reload diff" }).click();
     expect(onReload).toHaveBeenCalledOnce();
+    const wordWrap = page.getByRole("button", { name: "Word wrap" });
+    await expect.element(wordWrap).toHaveAttribute("aria-pressed", "false");
+    await expect.element(wordWrap).toHaveAttribute("title", "Word wrap (⌥Z)");
+    await wordWrap.click();
+    expect(onDiffWordWrapChange).toHaveBeenCalledWith(true);
     await page.getByRole("button", { name: "Close file view" }).click();
     expect(onClose).toHaveBeenCalledOnce();
     await mounted.unmount();

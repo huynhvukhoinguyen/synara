@@ -22,6 +22,7 @@ import {
 } from "@pierre/diffs/react";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { useAppSettings } from "~/appSettings";
 import { buildDiffPanelUnsafeCSS, resolveDiffThemeName } from "~/lib/diffRendering";
 import { cn } from "~/lib/utils";
 import { FileDiffHeader } from "./FileDiffHeader";
@@ -108,6 +109,9 @@ export function FileDiffCard(props: {
 // highlighter resources before mounting a plain FileDiff; its first hydrate can
 // then render synchronously without a worker or Virtualizer ancestor.
 export function SingleFileDiffBody(props: { fileDiff: FileDiffMetadata; theme: "light" | "dark" }) {
+  // The same persisted word-wrap preference as the diff panel. Wrapped lines fit the
+  // viewport, so the outer-scroll override below only applies while lines scroll.
+  const wordWrap = useAppSettings().settings.diffWordWrap;
   const themeName = resolveDiffThemeName(props.theme);
   const language = props.fileDiff.lang ?? getFiletypeFromFileName(props.fileDiff.name);
   const preloadKey = `${themeName}:${language}`;
@@ -161,6 +165,7 @@ export function SingleFileDiffBody(props: { fileDiff: FileDiffMetadata; theme: "
       // Give the light-DOM host the measured code width so ScrollArea can own
       // horizontal scrolling and keep its track at the viewport's bottom edge.
       host.style.width = "";
+      if (wordWrap) return;
       host.style.width = `${Math.max(body.clientWidth, code.scrollWidth)}px`;
     };
     const scheduleSyncOuterScrollWidth = () => {
@@ -184,7 +189,7 @@ export function SingleFileDiffBody(props: { fileDiff: FileDiffMetadata; theme: "
       resizeObserver?.disconnect();
       window.removeEventListener("resize", syncOuterScrollWidth);
     };
-  }, [preloadKey, resourcesReady]);
+  }, [preloadKey, resourcesReady, wordWrap]);
 
   if (loadResult?.key === preloadKey && loadResult.error) {
     return (
@@ -210,10 +215,10 @@ export function SingleFileDiffBody(props: { fileDiff: FileDiffMetadata; theme: "
         options={{
           diffStyle: "unified",
           lineDiffType: "none",
-          overflow: "scroll",
+          overflow: wordWrap ? "wrap" : "scroll",
           theme: themeName,
           themeType: props.theme,
-          unsafeCSS: `${buildDiffPanelUnsafeCSS(props.theme)}${SINGLE_FILE_OUTER_SCROLL_CSS}`,
+          unsafeCSS: `${buildDiffPanelUnsafeCSS(props.theme)}${wordWrap ? "" : SINGLE_FILE_OUTER_SCROLL_CSS}`,
           disableFileHeader: true,
         }}
         disableWorkerPool

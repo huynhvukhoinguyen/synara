@@ -12,11 +12,12 @@ function isDisplayed(element: HTMLElement): boolean {
     : element.offsetParent !== null;
 }
 
-export function useDiffChangeNavigationShortcuts({
+export function useDiffPanelShortcuts({
   keybindings,
   enabled,
   surfaceRef,
   onNavigate,
+  onToggleWordWrap,
 }: {
   keybindings: ResolvedKeybindingsConfig;
   enabled: boolean;
@@ -27,6 +28,7 @@ export function useDiffChangeNavigationShortcuts({
    */
   surfaceRef: RefObject<HTMLElement | null>;
   onNavigate: (direction: DiffChangeNavigationDirection) => void;
+  onToggleWordWrap: () => void;
 }): void {
   useEffect(() => {
     if (!enabled) return;
@@ -37,12 +39,22 @@ export function useDiffChangeNavigationShortcuts({
       const command = resolveShortcutCommand(event, keybindings, {
         context: { terminalFocus: isTerminalFocused() },
       });
-      if (command !== "diff.change.next" && command !== "diff.change.previous") return;
+      if (
+        command !== "diff.change.next" &&
+        command !== "diff.change.previous" &&
+        command !== "diff.wordWrap.toggle"
+      ) {
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
+      if (command === "diff.wordWrap.toggle") {
+        onToggleWordWrap();
+        return;
+      }
       onNavigate(command === "diff.change.next" ? "next" : "previous");
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [enabled, keybindings, onNavigate, surfaceRef]);
+  }, [enabled, keybindings, onNavigate, onToggleWordWrap, surfaceRef]);
 }

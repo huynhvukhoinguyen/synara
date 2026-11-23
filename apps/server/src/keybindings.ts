@@ -143,6 +143,7 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+d", command: "diff.toggle", when: "!terminalFocus" },
   { key: "alt+arrowdown", command: "diff.change.next", when: "!terminalFocus" },
   { key: "alt+arrowup", command: "diff.change.previous", when: "!terminalFocus" },
+  { key: "alt+z", command: "diff.wordWrap.toggle", when: "!terminalFocus" },
   // Cmd-only instead of mod so Ctrl+L remains available to shells on non-macOS.
   { key: "cmd+l", command: "composer.focus.toggle", when: "!terminalFocus" },
   { key: "mod+f", command: "chat.find", when: "!terminalFocus" },

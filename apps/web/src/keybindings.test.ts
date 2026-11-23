@@ -49,6 +49,22 @@ describe("editable keybinding resolution", () => {
   });
 });
 
+describe("diff word wrap shortcut", () => {
+  it("toggles word wrap on Option+Z, even as it types Ω on a Mac, and yields to the terminal", () => {
+    for (const platform of ["MacIntel", "Win32", "Linux"]) {
+      const press = event({
+        key: platform === "MacIntel" ? "Ω" : "z",
+        code: "KeyZ",
+        altKey: true,
+      });
+      assert.equal(resolveShortcutCommand(press, [], { platform }), "diff.wordWrap.toggle");
+      assert.isNull(
+        resolveShortcutCommand(press, [], { platform, context: { terminalFocus: true } }),
+      );
+    }
+  });
+});
+
 describe("active thread action shortcuts", () => {
   for (const [key, command] of [
     ["a", "thread.archive"],

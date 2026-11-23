@@ -49,6 +49,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "diff.toggle",
   "diff.change.next",
   "diff.change.previous",
+  "diff.wordWrap.toggle",
   "composer.focus.toggle",
   "chat.find",
   "modelPicker.toggle",

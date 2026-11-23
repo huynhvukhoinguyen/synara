@@ -118,6 +118,31 @@ export function revealHubsRailItemOnce(storage: Storage | undefined = globalThis
   }
 }
 
+// Saved settings carry the old `diffWordWrap: false` default, and inside Lattice word wrap
+// now defaults on. The first Lattice launch after that change turns it on once; turning it
+// off afterwards sticks. Standalone Synara keeps whatever it saved.
+const EMBED_DIFF_WORD_WRAP_DEFAULT_MIGRATION_STORAGE_KEY = "synara:embed-diff-word-wrap-default:v1";
+
+/** Like `revealHubsRailItemOnce`, this rewrites the stored settings before the app renders. */
+export function wrapEmbedDiffLinesOnce(
+  storage: Storage | undefined = globalThis.localStorage,
+  embedded: boolean = isLatticeEmbedDocument(),
+) {
+  try {
+    if (!embedded || !storage) return;
+    if (storage.getItem(EMBED_DIFF_WORD_WRAP_DEFAULT_MIGRATION_STORAGE_KEY) === "1") return;
+    storage.setItem(EMBED_DIFF_WORD_WRAP_DEFAULT_MIGRATION_STORAGE_KEY, "1");
+    const raw = storage.getItem(APP_SETTINGS_STORAGE_KEY);
+    if (!raw) return;
+    const stored: unknown = JSON.parse(raw);
+    if (typeof stored !== "object" || stored === null || !("diffWordWrap" in stored)) return;
+    if (stored.diffWordWrap !== false) return;
+    storage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify({ ...stored, diffWordWrap: true }));
+  } catch {
+    // Unreadable storage keeps the saved setting as it is.
+  }
+}
+
 const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
 export const MIN_CHAT_FONT_SIZE_PX = 11;
@@ -431,7 +456,9 @@ export const AppSettingsSchema = Schema.Struct({
   resumeChatsAfterQuit: Schema.Boolean.pipe(withDefaults(() => true)),
   confirmThreadArchive: Schema.Boolean.pipe(withDefaults(() => false)),
   confirmTerminalTabClose: Schema.Boolean.pipe(withDefaults(() => true)),
-  diffWordWrap: Schema.Boolean.pipe(withDefaults(() => false)),
+  // Lattice's agent reviews prose and LaTeX, whose paragraphs are single long lines, so its
+  // diffs wrap unless the writer turns it off; code diffs elsewhere keep one row per line.
+  diffWordWrap: Schema.Boolean.pipe(withDefaults(() => isLatticeEmbedDocument())),
   showPullRequestDiffColors: Schema.Boolean.pipe(withDefaults(() => true)),
   githubLinkOpenTarget: GitHubLinkOpenTarget.pipe(
     withDefaults(() => DEFAULT_GITHUB_LINK_OPEN_TARGET),
