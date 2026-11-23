@@ -61,6 +61,7 @@ import {
   resolveSelectableProviderInstanceId,
   resolveTerminalFontFamilyStack,
   revealHubsRailItemOnce,
+  wrapEmbedDiffLinesOnce,
   serverSettingsToAppSettings,
 } from "./appSettings";
 
@@ -1847,6 +1848,35 @@ describe("revealHubsRailItemOnce", () => {
     );
     revealHubsRailItemOnce(storage);
     expect(readHidden(storage)).toEqual(["kanban", "studio"]);
+  });
+});
+
+const readDiffWordWrap = (storage: Storage) =>
+  JSON.parse(storage.getItem("synara:app-settings:v1") ?? "{}").diffWordWrap;
+
+describe("wrapEmbedDiffLinesOnce", () => {
+  it("turns on word wrap saved under the old default once inside Lattice, then keeps a later off", () => {
+    const storage = memoryStorage({
+      "synara:app-settings:v1": JSON.stringify({ diffWordWrap: false }),
+    });
+
+    wrapEmbedDiffLinesOnce(storage, true);
+    expect(readDiffWordWrap(storage)).toBe(true);
+
+    storage.setItem("synara:app-settings:v1", JSON.stringify({ diffWordWrap: false }));
+    wrapEmbedDiffLinesOnce(storage, true);
+    expect(readDiffWordWrap(storage)).toBe(false);
+  });
+
+  it("leaves standalone Synara's saved word wrap alone", () => {
+    const storage = memoryStorage({
+      "synara:app-settings:v1": JSON.stringify({ diffWordWrap: false }),
+    });
+
+    wrapEmbedDiffLinesOnce(storage, false);
+    expect(readDiffWordWrap(storage)).toBe(false);
+    wrapEmbedDiffLinesOnce(storage, true);
+    expect(readDiffWordWrap(storage)).toBe(true);
   });
 });
 

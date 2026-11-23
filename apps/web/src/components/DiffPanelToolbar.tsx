@@ -48,6 +48,7 @@ import {
 } from "./DiffPanelChangeNavigation";
 import { DiffPanelCompareRefMenuSection } from "./DiffPanelCompareRefMenuSection";
 import { DiffPanelFileJumpMenu } from "./DiffPanelFileJumpMenu";
+import { DiffWordWrapButton, DiffWordWrapMenuItem } from "./DiffWordWrapControls";
 import { ComposerPickerMenuPopup } from "./chat/ComposerPickerMenuPopup";
 import { EnvironmentRowBody, EnvironmentRowChevron } from "./chat/environment/EnvironmentRow";
 import type { DiffRenderMode } from "./chat/chatHeaderControls";
@@ -126,6 +127,7 @@ interface DiffPanelToolbarProps {
   resolvedTheme: "light" | "dark";
   diffRenderMode: DiffRenderMode;
   diffWordWrap: boolean;
+  diffWordWrapShortcutLabel: string | null;
   diffIgnoreWhitespace: boolean;
   diffCopyText: string | null;
   diffCopyLabel: string;
@@ -365,6 +367,13 @@ export const DiffPanelToolbar = function DiffPanelToolbar(props: DiffPanelToolba
             <RefreshCwIcon className={cn("size-3.5", props.reloading && "animate-spin")} />
           </IconButton>
 
+          <DiffWordWrapButton
+            enabled={props.diffWordWrap}
+            shortcutLabel={props.diffWordWrapShortcutLabel}
+            onChange={props.onDiffWordWrapChange}
+            className={TOOLBAR_ICON_BUTTON_TONE_CLASS_NAME}
+          />
+
           <Menu>
             <MenuTrigger
               render={
@@ -413,15 +422,11 @@ export const DiffPanelToolbar = function DiffPanelToolbar(props: DiffPanelToolba
                 >
                   {t("common:ignoreWhitespaceOnlyChanges")}
                 </MenuCheckboxItem>
-                <MenuCheckboxItem
-                  checked={props.diffWordWrap}
-                  variant="switch"
-                  onCheckedChange={(checked) => {
-                    props.onDiffWordWrapChange(checked === true);
-                  }}
-                >
-                  {t("common:diff_wrapLongLines")}
-                </MenuCheckboxItem>
+                <DiffWordWrapMenuItem
+                  enabled={props.diffWordWrap}
+                  shortcutLabel={props.diffWordWrapShortcutLabel}
+                  onChange={props.onDiffWordWrapChange}
+                />
                 <MenuCheckboxItem
                   checked={props.changeMarkersEnabled}
                   variant="switch"

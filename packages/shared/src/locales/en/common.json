@@ -360,7 +360,7 @@
   "advanced_releaseHistory": "Release history",
   "subagentFailed": "Subagent failed",
   "turn": "Turn {{value0}}",
-  "diff_wrapLongLines": "Wrap long lines",
+  "diff_wrapLongLines": "Word wrap",
   "yourDaySoFar": "Your day so far",
   "lifetimeTokens": "lifetime tokens",
   "days": "{{amount}} days",

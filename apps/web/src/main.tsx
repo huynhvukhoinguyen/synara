@@ -7,7 +7,7 @@ import "@fontsource-variable/inter";
 import "./index.css";
 
 import { appHistory } from "./appNavigation";
-import { revealHubsRailItemOnce } from "./appSettings";
+import { revealHubsRailItemOnce, wrapEmbedDiffLinesOnce } from "./appSettings";
 import { getRouter } from "./router";
 import { APP_DISPLAY_NAME } from "./branding";
 import { initializeEmbedMode } from "./embedMode";
@@ -53,6 +53,7 @@ startLatticePopupDismissal();
 startLatticeHostShortcuts();
 // Before the first render: settings hooks read the stored rail on mount.
 revealHubsRailItemOnce();
+wrapEmbedDiffLinesOnce();
 const router = getRouter(appHistory);
 const disposeProductNavigation = router.subscribe("onResolved", ({ toLocation, pathChanged }) => {
   if (pathChanged) trackProductNavigation(toLocation.pathname);

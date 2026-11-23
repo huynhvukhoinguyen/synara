@@ -23,7 +23,7 @@ import {
 import { stripDiffSearchParams } from "../diffRouteSearch";
 import { useTheme } from "../hooks/useTheme";
 import { useDiffRouteSearch } from "../hooks/useDiffRouteSearch";
-import { useDiffChangeNavigationShortcuts } from "../hooks/useDiffChangeNavigationShortcuts";
+import { useDiffPanelShortcuts } from "../hooks/useDiffPanelShortcuts";
 import { useVisibleDiffFilePath } from "../hooks/useVisibleDiffFilePath";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { shortcutLabelForCommand } from "../keybindings";
@@ -104,6 +104,7 @@ import { DiffPanelCompareRefMenuSection } from "./DiffPanelCompareRefMenuSection
 import { DiffPanelPatchViewport } from "./DiffPanelPatchViewport";
 import { DiffPanelCloseButton, DiffPanelToolbar } from "./DiffPanelToolbar";
 import { DiffTruncationWarning } from "./DiffTruncationWarning";
+import { DiffWordWrapButton, DiffWordWrapMenuItem } from "./DiffWordWrapControls";
 import { ReviewFileTreePanel } from "./ReviewFileTreePanel";
 import { ComposerPickerMenuPopup } from "./chat/ComposerPickerMenuPopup";
 import { closestThroughShadow } from "./chat/chatSelectionActions";
@@ -162,6 +163,7 @@ function EditorDiffOptionsMenu(props: {
   timestampFormat: TimestampFormat;
   renderableFiles: ReadonlyArray<FileDiffMetadata>;
   diffWordWrap: boolean;
+  diffWordWrapShortcutLabel: string | null;
   diffIgnoreWhitespace: boolean;
   diffCopyText: string | null;
   diffCopyLabel: string;
@@ -320,15 +322,11 @@ function EditorDiffOptionsMenu(props: {
           >
             {t("common:ignoreWhitespaceOnlyChanges")}
           </MenuCheckboxItem>
-          <MenuCheckboxItem
-            checked={props.diffWordWrap}
-            variant="switch"
-            onCheckedChange={(checked) => {
-              props.onDiffWordWrapChange(checked === true);
-            }}
-          >
-            {t("common:diff_wrapLongLines")}
-          </MenuCheckboxItem>
+          <DiffWordWrapMenuItem
+            enabled={props.diffWordWrap}
+            shortcutLabel={props.diffWordWrapShortcutLabel}
+            onChange={props.onDiffWordWrapChange}
+          />
           <MenuCheckboxItem
             checked={props.changeMarkersEnabled}
             variant="switch"
@@ -381,6 +379,7 @@ function EditorDiffControls(props: {
   renderableFiles: ReadonlyArray<FileDiffMetadata>;
   diffRenderMode: DiffRenderMode;
   diffWordWrap: boolean;
+  diffWordWrapShortcutLabel: string | null;
   diffIgnoreWhitespace: boolean;
   diffCopyText: string | null;
   diffCopyLabel: string;
@@ -405,6 +404,12 @@ function EditorDiffControls(props: {
         navigation={props.changeNavigation}
         className={TOOLBAR_ICON_BUTTON_TONE_CLASS_NAME}
       />
+      <DiffWordWrapButton
+        enabled={props.diffWordWrap}
+        shortcutLabel={props.diffWordWrapShortcutLabel}
+        onChange={props.onDiffWordWrapChange}
+        className={TOOLBAR_ICON_BUTTON_TONE_CLASS_NAME}
+      />
       <EditorDiffOptionsMenu
         scopePickerValue={props.scopePickerValue}
         scopeFileCounts={props.scopeFileCounts}
@@ -417,6 +422,7 @@ function EditorDiffControls(props: {
         timestampFormat={props.timestampFormat}
         renderableFiles={props.renderableFiles}
         diffWordWrap={props.diffWordWrap}
+        diffWordWrapShortcutLabel={props.diffWordWrapShortcutLabel}
         diffIgnoreWhitespace={props.diffIgnoreWhitespace}
         diffCopyText={props.diffCopyText}
         diffCopyLabel={props.diffCopyLabel}
@@ -482,14 +488,25 @@ export default function DiffPanel({
   const hideHeader = hideHeaderProp ?? false;
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
-  const { settings } = useAppSettings();
+  const { settings, updateSettings } = useAppSettings();
   const newChatDefault = useNewChatDefault(settings);
   const [defaultDiffRenderMode, setDefaultDiffRenderMode] = useLocalStorage(
     DIFF_RENDER_MODE_STORAGE_KEY,
     DEFAULT_DIFF_RENDER_MODE,
     DiffRenderModeSchema,
   );
-  const [diffWordWrap, setDiffWordWrap] = useState(settings.diffWordWrap);
+  // Word wrap is one persisted preference shared by every diff surface, like
+  // VS Code's editor.wordWrap: the toolbar button, the options menu, ⌥Z and
+  // Settings all read and write it.
+  const diffWordWrap = settings.diffWordWrap;
+  const setDiffWordWrap = useCallback(
+    (enabled: boolean) => updateSettings({ diffWordWrap: enabled }),
+    [updateSettings],
+  );
+  const toggleDiffWordWrap = useCallback(
+    () => setDiffWordWrap(!diffWordWrap),
+    [diffWordWrap, setDiffWordWrap],
+  );
   const [diffIgnoreWhitespace, setDiffIgnoreWhitespace] = useState(true);
   const [changeMarkersEnabled, setChangeMarkersEnabled] = useState(true);
   const [scopePickerOpen, setScopePickerOpen] = useState(false);
@@ -1013,11 +1030,10 @@ export default function DiffPanel({
       return;
     }
     const timeoutId = window.setTimeout(() => {
-      setDiffWordWrap(settings.diffWordWrap);
       setDiffViewKind(resolveInitialDiffViewKind(selectedTurnId));
     }, 0);
     return () => window.clearTimeout(timeoutId);
-  }, [diffOpen, selectedTurnId, settings.diffWordWrap]);
+  }, [diffOpen, selectedTurnId]);
 
   useEffect(() => {
     if (selectedTurnId === null) {
@@ -1066,12 +1082,14 @@ export default function DiffPanel({
   }, [goToAdjacentChange]);
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const keybindings = serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS;
-  useDiffChangeNavigationShortcuts({
+  useDiffPanelShortcuts({
     keybindings,
     enabled: diffQueriesEnabled && diffFilePaths.length > 0,
     surfaceRef: patchViewportRef,
     onNavigate: goToAdjacentChange,
+    onToggleWordWrap: toggleDiffWordWrap,
   });
+  const diffWordWrapShortcutLabel = shortcutLabelForCommand(keybindings, "diff.wordWrap.toggle");
   const changeNavigation = useMemo(
     (): DiffPanelChangeNavigation => ({
       canGoToPrevious:
@@ -1334,6 +1352,7 @@ export default function DiffPanel({
           renderableFiles={renderableFiles}
           diffRenderMode={diffRenderMode}
           diffWordWrap={diffWordWrap}
+          diffWordWrapShortcutLabel={diffWordWrapShortcutLabel}
           diffIgnoreWhitespace={diffIgnoreWhitespace}
           diffCopyText={diffCopyText}
           diffCopyLabel={diffCopyLabel}
@@ -1364,6 +1383,7 @@ export default function DiffPanel({
       diffIgnoreWhitespace,
       diffRenderMode,
       diffWordWrap,
+      diffWordWrapShortcutLabel,
       hideHeader,
       inferredCheckpointTurnCountByTurnId,
       orderedTurnDiffSummaries,
@@ -1378,6 +1398,7 @@ export default function DiffPanel({
       selectTurn,
       selectedTurnId,
       setDiffRenderMode,
+      setDiffWordWrap,
       settings.timestampFormat,
       toggleCollapseAll,
       viewSource,
@@ -1424,6 +1445,7 @@ export default function DiffPanel({
           resolvedTheme={resolvedTheme}
           diffRenderMode={diffRenderMode}
           diffWordWrap={diffWordWrap}
+          diffWordWrapShortcutLabel={diffWordWrapShortcutLabel}
           diffIgnoreWhitespace={diffIgnoreWhitespace}
           diffCopyText={diffCopyText}
           diffCopyLabel={diffCopyLabel}
@@ -1468,6 +1490,7 @@ export default function DiffPanel({
       diffIgnoreWhitespace,
       diffRenderMode,
       diffWordWrap,
+      diffWordWrapShortcutLabel,
       fileTreeOpen,
       hideHeader,
       inferredCheckpointTurnCountByTurnId,
@@ -1489,6 +1512,7 @@ export default function DiffPanel({
       activeFilePath,
       selectedTurnId,
       setDiffRenderMode,
+      setDiffWordWrap,
       settings.timestampFormat,
       showDiffToolbar,
       toggleCollapseAll,

@@ -235,6 +235,11 @@ const AVAILABLE_NOW_DEFINITIONS: readonly ShortcutDefinition[] = [
     description: "Jump the diff viewport to the previous changed file.",
   },
   {
+    command: "diff.wordWrap.toggle",
+    label: "Toggle word wrap",
+    description: "Wrap or unwrap long lines in the diff viewport.",
+  },
+  {
     command: "sidechat.toggle",
     label: "Toggle side chat",
     description: "Open or hide a side chat beside the main conversation.",

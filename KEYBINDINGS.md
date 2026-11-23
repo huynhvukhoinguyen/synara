@@ -74,6 +74,7 @@ Shortcuts follow the character your layout types: on AZERTY, the key labelled A 
   { "key": "mod+d", "command": "diff.toggle", "when": "!terminalFocus" },
   { "key": "alt+arrowdown", "command": "diff.change.next", "when": "!terminalFocus" },
   { "key": "alt+arrowup", "command": "diff.change.previous", "when": "!terminalFocus" },
+  { "key": "alt+z", "command": "diff.wordWrap.toggle", "when": "!terminalFocus" },
   { "key": "cmd+l", "command": "composer.focus.toggle", "when": "!terminalFocus" },
   { "key": "mod+f", "command": "chat.find", "when": "!terminalFocus" },
   { "key": "mod+p", "command": "search.files", "when": "!terminalFocus" },
@@ -219,6 +220,7 @@ The command identifiers are defined by [`STATIC_KEYBINDING_COMMANDS`](packages/c
 | `device.toggle`                                          | Show or hide the iOS Simulator panel when supported by a macOS server; no default binding.           |
 | `diff.toggle`                                            | Show or hide the working tree diff panel.                                                            |
 | `diff.change.next`, `diff.change.previous`               | Scroll an open diff panel to the next or previous changed file.                                      |
+| `diff.wordWrap.toggle`                                   | Wrap or unwrap long lines in an open diff panel, in split and stacked views.                         |
 | `composer.focus.toggle`                                  | Focus or blur the chat composer.                                                                     |
 | `chat.find`                                              | Find text in the current transcript.                                                                 |
 | `search.files`, `search.content`                         | Open workspace file-name or snippet-content search.                                                  |
