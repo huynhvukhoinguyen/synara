@@ -6,7 +6,7 @@
 import "../../index.css";
 
 import { page, userEvent } from "vitest/browser";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import type {
   DesktopAppSnapCapture,
@@ -28,7 +28,7 @@ vi.mock("~/components/ui/toast", () => ({
   toastManager: { add: harness.toastAdd },
 }));
 
-import { ComposerExtrasPanel } from "./ComposerExtrasPanel";
+import { ComposerExtrasPanel, ComposerFileInput } from "./ComposerExtrasPanel";
 
 const threadId = "thread-1" as ThreadId;
 
@@ -124,7 +124,7 @@ async function mountMenu(props?: {
   supportsFastMode?: boolean;
   threadId?: ThreadId;
 }) {
-  const onAddAttachments = vi.fn();
+  const onChooseFiles = vi.fn();
   const onToggleFastMode = vi.fn();
   const onInteractionModeChange = vi.fn();
   const onInsertGoal = vi.fn();
@@ -138,7 +138,7 @@ async function mountMenu(props?: {
       supportsFastMode={props?.supportsFastMode ?? true}
       fastModeEnabled={props?.fastModeEnabled ?? false}
       {...(props?.threadId !== undefined ? { threadId: props.threadId } : {})}
-      onAddAttachments={onAddAttachments}
+      onChooseFiles={onChooseFiles}
       onToggleFastMode={onToggleFastMode}
       onInteractionModeChange={onInteractionModeChange}
       onInsertGoal={onInsertGoal}
@@ -155,7 +155,7 @@ async function mountMenu(props?: {
   return {
     [Symbol.asyncDispose]: cleanup,
     cleanup,
-    onAddAttachments,
+    onChooseFiles,
     onToggleFastMode,
     onInteractionModeChange,
     onInsertGoal,
@@ -176,8 +176,22 @@ describe("ComposerExtrasPanel", () => {
     setDesktopBridge(undefined);
   });
 
-  it("uses an unrestricted file picker and forwards every selected file", async () => {
+  it("opens the composer's file chooser from Files and folders and closes", async () => {
     await using menu = await mountMenu();
+
+    await page.getByRole("option", { name: "Files and folders", exact: true }).click();
+
+    expect(menu.onChooseFiles).toHaveBeenCalledTimes(1);
+    expect(menu.onClose).toHaveBeenCalledTimes(1);
+    expect(document.querySelector("[data-testid='composer-file-input']")).toBeNull();
+  });
+
+  it("uses an unrestricted file picker and forwards every selected file", async () => {
+    const onAddAttachments = vi.fn();
+    const screen = await render(
+      <ComposerFileInput ref={null} onAddAttachments={onAddAttachments} />,
+    );
+    onTestFinished(() => screen.unmount());
 
     const input = document.querySelector<HTMLInputElement>("[data-testid='composer-file-input']");
     expect(input).not.toBeNull();
@@ -192,8 +206,8 @@ describe("ComposerExtrasPanel", () => {
     });
     input?.dispatchEvent(new Event("change", { bubbles: true }));
 
-    expect(menu.onAddAttachments).toHaveBeenCalledTimes(1);
-    expect(menu.onAddAttachments.mock.calls[0]?.[0]?.map((file: File) => file.name)).toEqual([
+    expect(onAddAttachments).toHaveBeenCalledTimes(1);
+    expect(onAddAttachments.mock.calls[0]?.[0]?.map((file: File) => file.name)).toEqual([
       "photo.png",
       "document.pdf",
     ]);

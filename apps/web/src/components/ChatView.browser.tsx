@@ -74,6 +74,7 @@ import {
 import { extractTrailingBrowserAnnotations } from "../lib/browserAnnotations";
 import { setLiveLatticeHostContext } from "../lib/latticeHostContext";
 import { LATTICE_HOST_CONTEXT } from "../embedMode";
+import { startLatticePopupDismissal } from "../latticePopupDismissal";
 import { isMacNavigatorPlatform, randomUUID } from "../lib/utils";
 import { STARRED_MODELS_STORAGE_KEY } from "../lib/starredModels";
 import { readNativeApi } from "../nativeApi";
@@ -2916,6 +2917,59 @@ describe("ChatView transcript geometry (full app)", () => {
         rowRect.top + rowRect.height / 2,
       );
       expect(row.element().contains(topmost)).toBe(true);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  // lattice-writer/lattice#1253: in Lattice, the native chooser that + → Files and folders
+  // opens takes focus from the frame, and losing focus dismisses open popups. The + panel
+  // closed while the chooser was open, and the file input inside it went with it, so the
+  // chosen files never reached the draft.
+  it("attaches files chosen after the + panel closes for the native chooser in Lattice", async () => {
+    sessionStorage.setItem(
+      "synara.poc.embed-mode",
+      JSON.stringify({
+        workspaceRoot: "/repo/project",
+        theme: "light",
+        surface: "chrome",
+        hostOrigin: window.location.origin,
+        locale: "en",
+      }),
+    );
+    onTestFinished(() => sessionStorage.removeItem("synara.poc.embed-mode"));
+    const stopPopupDismissal = startLatticePopupDismissal();
+    onTestFinished(stopPopupDismissal);
+    const openChooser = vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(() => {});
+    onTestFinished(() => openChooser.mockRestore());
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, width: 520 },
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-embed-file-chooser" as MessageId,
+        targetText: "embed file chooser",
+      }),
+    });
+    try {
+      await waitForComposerEditor();
+      await page.getByRole("button", { name: "Composer extras", exact: true }).click();
+      await page.getByRole("option", { name: "Files and folders", exact: true }).click();
+      expect(openChooser).toHaveBeenCalledTimes(1);
+
+      // The chooser takes focus from the frame while the writer picks a file.
+      window.dispatchEvent(new Event("blur"));
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-testid='composer-extras-panel']")).toBeNull();
+      });
+
+      const input = document.querySelector<HTMLInputElement>("[data-testid='composer-file-input']");
+      expect(input).not.toBeNull();
+      const files = new DataTransfer();
+      files.items.add(new File(["hello from the chooser\n"], "hello.txt", { type: "text/plain" }));
+      Object.defineProperty(input, "files", { configurable: true, value: files.files });
+      input!.dispatchEvent(new Event("change", { bubbles: true }));
+
+      const form = document.querySelector<HTMLElement>('[data-chat-composer-form="true"]')!;
+      await vi.waitFor(() => expect(form.textContent).toContain("hello.txt"));
     } finally {
       await mounted.cleanup();
     }

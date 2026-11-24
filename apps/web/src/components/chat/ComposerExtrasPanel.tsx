@@ -11,7 +11,7 @@ import type {
   ProviderInteractionMode,
   ThreadId,
 } from "@synara/contracts";
-import { useEffect, useId, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type ReactNode, type Ref } from "react";
 
 import {
   ArrowLeftIcon,
@@ -64,7 +64,8 @@ export function ComposerExtrasPanel(props: {
   supportsFastMode: boolean;
   fastModeEnabled: boolean;
   threadId?: ThreadId;
-  onAddAttachments: (files: File[]) => void;
+  /** Opens the composer's file chooser, a `ComposerFileInput` the composer keeps mounted. */
+  onChooseFiles: () => void;
   onToggleFastMode: () => void;
   onInteractionModeChange: (mode: ProviderInteractionMode) => void;
   /** Turns the draft into a `/goal` command so the goal chip flow is the same as typing it. */
@@ -76,8 +77,6 @@ export function ComposerExtrasPanel(props: {
 }) {
   const { t } = useTranslation();
 
-  const inputId = useId();
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [view, setView] = useState<"root" | "windows">("root");
   const [activeRowId, setActiveRowId] = useState<string | null>(ROW_FILES);
@@ -228,7 +227,8 @@ export function ComposerExtrasPanel(props: {
 
   const selectRow = (rowId: string) => {
     if (rowId === ROW_FILES) {
-      fileInputRef.current?.click();
+      props.onChooseFiles();
+      props.onClose();
       return;
     }
     if (rowId === ROW_WINDOW) {
@@ -346,27 +346,8 @@ export function ComposerExtrasPanel(props: {
     };
   });
 
-  // Reset the hidden input so selecting the same file twice still emits a change event.
-  const handleFileInputChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
-    if (files.length > 0) {
-      props.onAddAttachments(files);
-    }
-    event.target.value = "";
-    props.onClose();
-  };
-
   return (
     <div ref={containerRef} id={props.panelId} data-testid="composer-extras-panel">
-      <input
-        id={inputId}
-        ref={fileInputRef}
-        data-testid="composer-file-input"
-        type="file"
-        multiple
-        className="sr-only"
-        onChange={handleFileInputChange}
-      />
       <ComposerMenuPanel
         groups={visibleGroups}
         activeRowId={highlightedRowId}
@@ -374,6 +355,39 @@ export function ComposerExtrasPanel(props: {
         onSelectRow={selectRow}
       />
     </div>
+  );
+}
+
+/**
+ * The hidden input behind + → Files and folders. It lives with the composer, not in the
+ * panel: the panel closes while the native chooser is open (in Lattice the frame loses focus
+ * to the chooser, and losing focus dismisses open popups), and an input unmounted with it
+ * never delivers the chosen files (lattice-writer/lattice#1253).
+ */
+export function ComposerFileInput(props: {
+  ref: Ref<HTMLInputElement>;
+  onAddAttachments: (files: File[]) => void;
+}) {
+  // Reset the input so choosing the same file twice still emits a change event.
+  const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (files.length > 0) {
+      props.onAddAttachments(files);
+    }
+  };
+
+  return (
+    <input
+      ref={props.ref}
+      data-testid="composer-file-input"
+      type="file"
+      multiple
+      tabIndex={-1}
+      aria-hidden
+      className="sr-only"
+      onChange={handleChange}
+    />
   );
 }
 
