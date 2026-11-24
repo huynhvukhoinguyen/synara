@@ -386,7 +386,7 @@ import { useComposerEditorRoom } from "./chat/composerEditorRoom";
 import { ComposerCommandItem, ComposerCommandMenu } from "./chat/ComposerCommandMenu";
 import { ComposerBlockedHandoffNotice } from "./chat/ComposerBlockedHandoffNotice";
 import { ComposerExpiredUserInputNotice } from "./chat/ComposerExpiredUserInputNotice";
-import { ComposerExtrasPanel } from "./chat/ComposerExtrasPanel";
+import { ComposerExtrasPanel, ComposerFileInput } from "./chat/ComposerExtrasPanel";
 import { ComposerExtrasTrigger } from "./chat/ComposerExtrasTrigger";
 import { ComposerGoalHeader } from "./chat/ComposerGoalHeader";
 import {
@@ -1023,6 +1023,7 @@ export default function ChatView({
   ]);
 
   const composerFormRef = useRef<HTMLFormElement>(null);
+  const composerFileInputRef = useRef<HTMLInputElement>(null);
   const composerStatusRowRef = useRef<HTMLDivElement>(null);
   // Set by whichever mounted GitActionsControl instance (header quick-action or the
   // Environment panel row) last registered — either performs the identical commit &
@@ -6950,6 +6951,13 @@ export default function ChatView({
         data-chat-composer-form="true"
         data-chat-pane-scope={paneScopeId}
       >
+        <ComposerFileInput
+          ref={composerFileInputRef}
+          onAddAttachments={(files) => {
+            addComposerAttachments(files);
+            scheduleComposerFocus();
+          }}
+        />
         <ComposerColumnFrame>
           {/* A bare wrapper keeps the normal-flow panels' -mb-px seam onto the input shell
                 via margin collapse. */}
@@ -7263,7 +7271,7 @@ export default function ChatView({
                         supportsFastMode={composerTraitSelection.caps.supportsFastMode}
                         fastModeEnabled={composerTraitSelection.fastModeEnabled}
                         threadId={threadId}
-                        onAddAttachments={addComposerAttachments}
+                        onChooseFiles={() => composerFileInputRef.current?.click()}
                         onToggleFastMode={toggleFastMode}
                         onInteractionModeChange={handleInteractionModeChange}
                         onInsertGoal={insertGoalSlashCommandInComposer}
