@@ -4,8 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { embedWorkspaceMatches, readEmbedMode } from "../embedMode";
 import { t } from "../i18n";
 import { createOrRecoverProjectFromPath } from "../lib/projectCreation";
+import { newCommandId } from "../lib/utils";
 import { readNativeApi } from "../nativeApi";
 import { useStore } from "../store";
+import { workspaceRootsEqual } from "@synara/shared/threadWorkspace";
 
 export function useEmbeddedWorkspaceProject(): {
   embedMode: ReturnType<typeof readEmbedMode>;
@@ -73,6 +75,38 @@ export function useEmbeddedWorkspaceProject(): {
       setBindingError(null);
     }
   }, [matchingProject]);
+
+  // Lattice owns the bound project's extra folders: the paper's linked research
+  // folder, or none. The server canonicalizes paths, so compare as workspace roots
+  // and dispatch each wanted set once.
+  const researchFolder = embedMode?.researchFolder;
+  const currentFolders = matchingProject?.additionalFolders;
+  const foldersDispatchedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (researchFolder === undefined || !matchingProject) return;
+    const wanted = researchFolder ? [researchFolder] : [];
+    const current = currentFolders ?? [];
+    const same =
+      wanted.length === current.length &&
+      wanted.every((folder, index) => workspaceRootsEqual(folder, current[index]!));
+    const key = `${matchingProject.id}\n${wanted.join("\n")}`;
+    if (same || foldersDispatchedRef.current === key) return;
+    foldersDispatchedRef.current = key;
+    const api = readNativeApi();
+    if (!api) return;
+    void api.orchestration
+      .dispatchCommand({
+        type: "project.meta.update",
+        commandId: newCommandId(),
+        projectId: matchingProject.id,
+        additionalFolders: wanted,
+      })
+      .catch((error: unknown) => {
+        // The paper stays usable without the research folder; Lattice validates the
+        // link before sending it, so this is a stale or vanished folder.
+        console.warn("Could not give the agent the linked research folder.", error);
+      });
+  }, [currentFolders, matchingProject, researchFolder]);
 
   return { embedMode, projectId, bindingError };
 }

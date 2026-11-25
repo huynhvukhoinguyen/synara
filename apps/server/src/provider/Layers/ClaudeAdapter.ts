@@ -172,7 +172,10 @@ import {
 import { ServerConfig } from "../../config.ts";
 import { buildFileAttachmentsPromptBlock } from "../attachmentProjection.ts";
 import { loadClaudeAgentSdk } from "../claudeAgentSdk.ts";
-import { withClaudeArtifactOptIn } from "../claudeProcessEnv.ts";
+import {
+  withAdditionalDirectoryInstructions,
+  withClaudeArtifactOptIn,
+} from "../claudeProcessEnv.ts";
 import { ClaudeRequestUsage } from "../claudeRequestUsage.ts";
 import {
   CLAUDE_CONTEXT_WINDOW_MAX_TOKENS,
@@ -8051,7 +8054,10 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             PreToolUse: [{ hooks: [subagentSteerHook] }],
           },
           canUseTool,
-          env: withClaudeArtifactOptIn(claudeSdkEnv, providerOptions?.enableArtifacts),
+          env: withAdditionalDirectoryInstructions(
+            withClaudeArtifactOptIn(claudeSdkEnv, providerOptions?.enableArtifacts),
+            input.additionalDirectories,
+          ),
           spawnClaudeCodeProcess: bindClaudeProcessOwner(
             processOwner,
             launchSettings.lowerProcessPriority,

@@ -1346,6 +1346,10 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           kind: nextProjectKind,
           workspaceRoot: command.workspaceRoot ?? existingProject.workspaceRoot,
           additionalFolders: command.additionalFolders ?? existingProject.additionalFolders ?? [],
+          // Linking a folder around the paper is allowed (Lattice's research folder,
+          // with the paper in `research/paper/`); moving the primary folder into an
+          // extra folder still is not.
+          allowPrimaryInsideAdditional: command.workspaceRoot === undefined,
         });
       }
       if (effectiveSpaceId !== null) {

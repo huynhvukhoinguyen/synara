@@ -122,6 +122,27 @@ describe("multi-folder projects", () => {
     );
   });
 
+  it("accepts an extra folder that contains the primary folder, but not one inside it", async () => {
+    // Lattice links a paper kept in `research/paper/` to its surrounding research folder.
+    const model = await apply(
+      createEmptyReadModel(now),
+      createMultiFolder({ additionalFolders: undefined }),
+    );
+    const parent = await apply(model, editFolders(["/repos"]));
+    expect(parent.projects[0]?.additionalFolders).toEqual(["/repos"]);
+    expect(parent.projects[0]?.workspaceRoot).toBe("/repos/web");
+    expect(await rejection(model, editFolders(["/repos/web/data"]))).toContain(
+      "data is inside web. Add only one of them.",
+    );
+    // Creating a project around a nested primary folder stays refused.
+    expect(
+      await rejection(
+        createEmptyReadModel(now),
+        createMultiFolder({ additionalFolders: ["/repos"] }),
+      ),
+    ).toContain("web is inside repos. Add only one of them.");
+  });
+
   it("rejects extra folders on container projects when editing", async () => {
     const model = await apply(
       createEmptyReadModel(now),

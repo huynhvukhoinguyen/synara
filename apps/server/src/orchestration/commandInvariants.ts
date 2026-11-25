@@ -334,6 +334,8 @@ export function requireValidProjectFolders(input: {
   readonly kind: ProjectKind;
   readonly workspaceRoot: string;
   readonly additionalFolders: ReadonlyArray<string>;
+  /** See `findProjectFolderProblem`: the primary folder may sit inside an extra folder. */
+  readonly allowPrimaryInsideAdditional?: boolean;
 }): Effect.Effect<void, OrchestrationCommandInvariantError> {
   if (input.additionalFolders.length === 0) return Effect.void;
   if (input.kind !== "project") {
@@ -343,6 +345,7 @@ export function requireValidProjectFolders(input: {
   }
   const problem = findProjectFolderProblem([input.workspaceRoot, ...input.additionalFolders], {
     platform: process.platform,
+    ...(input.allowPrimaryInsideAdditional === true ? { allowPrimaryInsideAdditional: true } : {}),
   });
   return problem === null ? Effect.void : Effect.fail(invariantError(input.command.type, problem));
 }

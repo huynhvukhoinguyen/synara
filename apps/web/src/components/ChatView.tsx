@@ -2664,6 +2664,9 @@ export default function ChatView({
     providerModelDiscoveryCwd,
     providerOptionsForDispatch,
     gitCwd,
+    ...(activeProject?.additionalFolders
+      ? { additionalFolders: activeProject.additionalFolders }
+      : {}),
     piAgentDir: settings.piAgentDir,
     ompAgentDir: settings.ompAgentDir,
     discoverNativeCompaction:
