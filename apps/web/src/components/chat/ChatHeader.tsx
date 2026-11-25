@@ -728,6 +728,17 @@ export function ChatHeader({
                 <span className="shrink-0 text-muted-foreground/35">/</span>
               </div>
             ) : null}
+            {historyProjectId ? (
+              // The embed has no sidebar: the history menu stays ahead of the tabs, so
+              // chats without an open tab remain reachable.
+              <EditorChatHistoryMenu
+                projectId={historyProjectId}
+                activeThreadId={activeThreadId}
+                onNavigateToThread={onNavigateToThread}
+                {...(onNewChat ? { onNewChat } : {})}
+                {...(onDeleteChat ? { onDeleteChat } : {})}
+              />
+            ) : null}
             {threadTabs}
             <ChatComputerLabel />
           </div>

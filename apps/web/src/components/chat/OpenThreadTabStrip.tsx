@@ -55,6 +55,8 @@ const CLOSE_TABS_MENU_ROWS: readonly { scope: OpenThreadTabCloseScope; labelKey:
 
 export function OpenThreadTabStrip(props: {
   activeThreadId: ThreadId;
+  /** Lists only this project's open chats (the Lattice embed's bound project). */
+  projectId?: ProjectId;
   keybindings: ResolvedKeybindingsConfig;
   closeActiveTabRef?: RefObject<(() => boolean) | null>;
   onRenameActiveThread: () => void;
@@ -68,7 +70,7 @@ export function OpenThreadTabStrip(props: {
 
   const { activeThreadId, keybindings } = props;
   useRecordOpenThreadTab(activeThreadId);
-  const tabs = useOpenThreadTabs({ activeThreadId });
+  const tabs = useOpenThreadTabs({ activeThreadId, projectId: props.projectId });
   const closeThreadTab = useOpenThreadTabsStore((state) => state.closeThreadTab);
   const pruneThreadTabs = useOpenThreadTabsStore((state) => state.pruneThreadTabs);
   const moveThreadTab = useOpenThreadTabsStore((state) => state.moveThreadTab);

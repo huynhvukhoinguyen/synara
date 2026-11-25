@@ -2976,9 +2976,10 @@ describe("ChatView transcript geometry (full app)", () => {
   });
 
   // Lattice's Agent panel is this app's whole viewport, so the panel's width picks the
-  // header. Open-thread tabs from 768px up used to replace the title row, and with it the
-  // chat history menu, the panel's only way back to a thread whose tab was closed
-  // (lattice#1195). Every width has to keep the history menu and list the project's threads.
+  // header. Open-thread tabs once replaced the title row, and with it the chat history
+  // menu, the panel's only way back to a thread whose tab was closed (lattice#1195). The
+  // embed now shows the project's tabs at every width with the history menu ahead of them,
+  // and the strip's + creates a chat in the bound project.
   it.each([
     { name: "narrow panel", width: 520 },
     { name: "tab breakpoint", width: 768 },
@@ -3017,8 +3018,8 @@ describe("ChatView transcript geometry (full app)", () => {
       await waitForComposerEditor();
       await expect
         .element(page.getByRole("button", { name: "New thread in this workspace" }))
-        .not.toBeInTheDocument();
-      const historyTrigger = page.getByRole("button", { name: /open chat history$/ });
+        .toBeVisible();
+      const historyTrigger = page.getByRole("button", { name: "Chat history" });
       await expect.element(historyTrigger).toBeVisible();
       await historyTrigger.click();
       await expect

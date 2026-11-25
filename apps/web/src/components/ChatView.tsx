@@ -6425,15 +6425,15 @@ export default function ChatView({
 
   // Open-thread tabs belong to the single chat on desktop; split panes, the editor rail,
   // phone-width headers, and users who turned tabs off keep the plain thread title.
-  // Lattice's embed keeps the title too: its chat history menu (`historyProjectId`) lives
-  // only in the title row, and the panel's width is the iframe's viewport, so tabs at
-  // 768px and wider hid every thread a closed tab left behind (lattice#1195).
+  // Lattice's embed shows them at any width, because the panel's width is the iframe's
+  // viewport, not the window's. Its tabs list only the bound project's chats, and the
+  // chat history menu (`historyProjectId`) sits ahead of them, so a thread a closed tab
+  // left behind stays reachable (lattice#1195).
   const showOpenThreadTabs =
     settings.showOpenThreadTabs &&
-    !isMobileViewport &&
+    (isEmbed || !isMobileViewport) &&
     surfaceMode === "single" &&
-    !isEditorRail &&
-    !isEmbed;
+    !isEditorRail;
 
   const activeThreadDisplayTitle = resolveActiveThreadTitle({
     title: isCoordinatorConversation
@@ -7551,13 +7551,17 @@ export default function ChatView({
                 threadTabs: (
                   <OpenThreadTabStrip
                     activeThreadId={activeThread.id}
+                    {...(isEmbed && activeProject ? { projectId: activeProject.id } : {})}
                     keybindings={keybindings}
                     closeActiveTabRef={closeActiveThreadTabRef}
                     onRenameActiveThread={() => setRenameDialogOpen(true)}
                     onNewThread={
-                      activeProjectScripts !== undefined || isHomeChatContainer
-                        ? onNewThreadFromHeader
-                        : null
+                      // The embed creates chats in the host's project, not the active Space.
+                      isEmbed
+                        ? onNewEmbedChat
+                        : activeProjectScripts !== undefined || isHomeChatContainer
+                          ? onNewThreadFromHeader
+                          : null
                     }
                   />
                 ),
