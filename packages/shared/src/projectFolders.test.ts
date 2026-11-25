@@ -42,6 +42,20 @@ describe("findProjectFolderProblem", () => {
       "api is inside repos. Add only one of them.",
     );
   });
+
+  it("can accept the primary folder inside an extra folder, and nothing else nested", () => {
+    const options = { allowPrimaryInsideAdditional: true };
+    expect(findProjectFolderProblem(["/research/paper", "/research"], options)).toBeNull();
+    expect(findProjectFolderProblem(["/research", "/research/data"], options)).toBe(
+      "data is inside research. Add only one of them.",
+    );
+    expect(findProjectFolderProblem(["/paper", "/research", "/research/data"], options)).toBe(
+      "data is inside research. Add only one of them.",
+    );
+    expect(findProjectFolderProblem(["/research/paper", "/research/paper/"], options)).toBe(
+      "paper is already in this project.",
+    );
+  });
 });
 
 describe("deriveProjectFolderLabels", () => {

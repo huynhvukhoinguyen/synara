@@ -14,6 +14,7 @@ import {
   hasUsableClaudeCliCredentials,
   readClaudeCliCredentialsContentSummary,
   resolveClaudeCredentialsPaths,
+  withAdditionalDirectoryInstructions,
   withClaudeArtifactOptIn,
 } from "./claudeProcessEnv.ts";
 import { buildClaudeInstanceProcessEnv, claudeIsolatedHomePath } from "./claudeEnvironment.ts";
@@ -711,5 +712,22 @@ describe("claudeProcessEnv", () => {
     assert.deepStrictEqual(withClaudeArtifactOptIn({ ...env, CLAUDE_CODE_ARTIFACT: "1" }, false), {
       PATH: "/usr/bin",
     });
+  });
+});
+
+describe("withAdditionalDirectoryInstructions", () => {
+  it("loads the extra folders' CLAUDE.md only when the session has extra folders", () => {
+    const env = { PATH: "/usr/bin" };
+    assert.strictEqual(withAdditionalDirectoryInstructions(env, undefined), env);
+    assert.strictEqual(withAdditionalDirectoryInstructions(env, []), env);
+    assert.deepStrictEqual(withAdditionalDirectoryInstructions(env, ["/research"]), {
+      PATH: "/usr/bin",
+      CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1",
+    });
+  });
+
+  it("keeps a value the provider environment already sets", () => {
+    const env = { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "0" };
+    assert.strictEqual(withAdditionalDirectoryInstructions(env, ["/research"]), env);
   });
 });

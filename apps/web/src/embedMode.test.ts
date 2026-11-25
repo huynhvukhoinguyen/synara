@@ -6,6 +6,8 @@ import {
   buildLatticeProjectHistoryCheckpoints,
   embedWorkspaceMatches,
   initializeEmbedMode,
+  latticeEmbedSearchFromConfig,
+  parseLatticeEmbedSearch,
   postEmbedReadyToLattice,
   postTurnActivityToLattice,
   postOpenFileToLattice,
@@ -128,6 +130,24 @@ afterEach(() => {
 });
 
 describe("Lattice embed mode", () => {
+  it("carries the linked research folder through the handshake search", () => {
+    expect(parseLatticeEmbedSearch({ researchFolder: " /Users/me/research " }).researchFolder).toBe(
+      "/Users/me/research",
+    );
+    // "" is Lattice saying "no folder linked"; an absent key is an older host.
+    expect(parseLatticeEmbedSearch({ researchFolder: "" }).researchFolder).toBe("");
+    expect("researchFolder" in parseLatticeEmbedSearch({})).toBe(false);
+    const config = {
+      workspaceRoot: "/Users/me/research/paper",
+      theme: "light" as const,
+      surface: "chrome" as const,
+      hostOrigin: null,
+      locale: "en" as const,
+    };
+    expect(latticeEmbedSearchFromConfig({ ...config, researchFolder: "" }).researchFolder).toBe("");
+    expect("researchFolder" in latticeEmbedSearchFromConfig(config)).toBe(false);
+  });
+
   it("moves the sidecar credential out of the fragment before opening WebSocket RPC", () => {
     const { replaceState } = installBrowserStubs();
 
