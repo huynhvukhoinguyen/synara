@@ -1454,6 +1454,11 @@ const ProjectMetaUpdateCommand = Schema.Struct({
   scripts: Schema.optional(Schema.Array(ProjectScript)),
   isPinned: Schema.optional(Schema.Boolean),
   spaceId: Schema.optional(Schema.NullOr(SpaceId)),
+  /**
+   * Replace the extra folders of an ordinary project (an empty list clears them).
+   * Lattice links a paper to its research folder this way after the project exists.
+   */
+  additionalFolders: Schema.optional(ProjectAdditionalFolders),
 });
 
 const ProjectDeleteCommand = Schema.Struct({
@@ -2339,6 +2344,7 @@ export const ProjectMetaUpdatedPayload = Schema.Struct({
   scripts: Schema.optional(Schema.Array(ProjectScript)),
   isPinned: Schema.optional(Schema.Boolean),
   spaceId: Schema.optional(Schema.NullOr(SpaceId)),
+  additionalFolders: Schema.optional(ProjectAdditionalFolders),
   updatedAt: IsoDateTime,
 });
 

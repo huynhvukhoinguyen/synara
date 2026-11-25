@@ -46,10 +46,14 @@ function folderName(path: string): string {
  * Checks an ordered folder list whose first entry is the primary folder. Returns a
  * user-facing problem, or null when every folder is absolute, distinct, and not nested
  * inside another one (a nested folder adds no access its parent does not already grant).
+ *
+ * `allowPrimaryInsideAdditional` accepts one exception: the primary folder inside an
+ * extra folder. That extra folder does add access (its parent tree), which is how
+ * Lattice gives a paper kept in `research/paper/` its surrounding research folder.
  */
 export function findProjectFolderProblem(
   paths: ReadonlyArray<string>,
-  options?: { readonly platform?: string },
+  options?: { readonly platform?: string; readonly allowPrimaryInsideAdditional?: boolean },
 ): string | null {
   if (paths.length === 0) return "Add at least one folder.";
   for (const path of paths) {
@@ -69,6 +73,7 @@ export function findProjectFolderProblem(
         return `${folderName(right)} is inside ${folderName(left)}. Add only one of them.`;
       }
       if (isWorkspaceRootWithin(left, right, options)) {
+        if (outer === 0 && options?.allowPrimaryInsideAdditional === true) continue;
         return `${folderName(left)} is inside ${folderName(right)}. Add only one of them.`;
       }
     }

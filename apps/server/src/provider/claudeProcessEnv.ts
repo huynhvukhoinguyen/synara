@@ -284,3 +284,18 @@ export function withClaudeArtifactOptIn(
   const { CLAUDE_CODE_ARTIFACT: _inherited, ...rest } = env;
   return rest;
 }
+
+/**
+ * Claude Code reads CLAUDE.md only from the cwd and its ancestors unless told to read
+ * the added directories too. A multi-folder project's extra folders (for Lattice, the
+ * paper's linked research folder) carry that project's own instructions, so load them.
+ * A value already in the provider environment wins.
+ */
+export function withAdditionalDirectoryInstructions(
+  env: NodeJS.ProcessEnv,
+  additionalDirectories: ReadonlyArray<string> | undefined,
+): NodeJS.ProcessEnv {
+  if (!additionalDirectories?.length) return env;
+  if (env.CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD !== undefined) return env;
+  return { ...env, CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" };
+}

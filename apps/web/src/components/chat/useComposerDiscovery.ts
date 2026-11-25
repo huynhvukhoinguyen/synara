@@ -10,7 +10,7 @@ import {
   ThreadId,
 } from "@synara/contracts";
 import { useDebouncedValue } from "@tanstack/react-pacer";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { isLocalFolderMentionQuery } from "~/lib/localFolderMentions";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
@@ -31,6 +31,7 @@ import {
 } from "../../composerSlashCommands";
 
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
+const EMPTY_FOLDERS: ReadonlyArray<string> = [];
 const EMPTY_PROVIDER_NATIVE_COMMANDS: ProviderNativeCommandDescriptor[] = [];
 const EMPTY_PROVIDER_SKILLS: ProviderSkillDescriptor[] = [];
 type ComposerPluginSuggestion = {
@@ -49,6 +50,8 @@ interface ComposerDiscoveryInput {
   providerModelDiscoveryCwd: string | null;
   providerOptionsForDispatch: ProviderStartOptions | undefined;
   gitCwd: string | null;
+  /** The project's extra folders (Lattice's linked research folder); `@` searches them too. */
+  additionalFolders?: ReadonlyArray<string>;
   piAgentDir: string;
   ompAgentDir: string;
   discoverNativeCompaction?: boolean;
@@ -63,6 +66,7 @@ export function useComposerDiscovery({
   providerModelDiscoveryCwd,
   providerOptionsForDispatch,
   gitCwd,
+  additionalFolders = EMPTY_FOLDERS,
   piAgentDir,
   ompAgentDir,
   discoverNativeCompaction,
@@ -168,7 +172,38 @@ export function useComposerDiscovery({
       limit: 80,
     }),
   );
-  const workspaceEntries = workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
+  // Extra folders are searched on their own and listed after the primary
+  // folder's hits. Their entries carry absolute paths (the mention then reads
+  // `@/abs/path`), since a path relative to the primary folder would be wrong.
+  const extraFolderQueries = useQueries({
+    queries: additionalFolders.map((folder) =>
+      projectSearchEntriesQueryOptions({
+        cwd: folder,
+        query: effectiveMentionQuery,
+        enabled: isMentionTrigger && !isLocalFolderBrowserOpen,
+        allowEmptyQuery: true,
+        ...(effectiveMentionQuery.length === 0 ? { kind: "file" as const } : {}),
+        limit: 40,
+      }),
+    ),
+  });
+  const primaryEntries = workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
+  const extraFoldersStamp = extraFolderQueries.map((query) => query.dataUpdatedAt).join(",");
+  const workspaceEntries = useMemo(() => {
+    if (additionalFolders.length === 0) return primaryEntries;
+    const extra = additionalFolders.flatMap((folder, index) => {
+      const root = folder.replace(/\/+$/, "");
+      return (extraFolderQueries[index]?.data?.entries ?? []).map(
+        (entry): ProjectEntry => ({
+          ...entry,
+          path: `${root}/${entry.path}`,
+          parentPath: entry.parentPath ? `${root}/${entry.parentPath}` : root,
+        }),
+      );
+    });
+    return [...primaryEntries, ...extra];
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the stamp stands for the query results, which are rebuilt each render
+  }, [additionalFolders, primaryEntries, extraFoldersStamp]);
 
   // Keep plugin suggestions referentially stable so prompt-sync effects do not loop on rerender.
   const providerPlugins = useMemo(
@@ -215,6 +250,7 @@ export function useComposerDiscovery({
       ((mentionTriggerQuery.length > 0 && composerPathQueryDebouncer.state.isPending) ||
         workspaceEntriesQuery.isLoading ||
         workspaceEntriesQuery.isFetching ||
+        extraFolderQueries.some((query) => query.isFetching) ||
         providerPluginsQuery.isLoading ||
         providerPluginsQuery.isFetching)) ||
     (composerTriggerKind === "slash-command" &&

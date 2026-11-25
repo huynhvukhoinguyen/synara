@@ -1180,6 +1180,12 @@ const make = Effect.gen(function* () {
   // was actually spawned with so a changed value restarts the runtime instead
   // of silently reusing a session provisioned under the old approval set.
   const threadSessionAutoApproveSynaraTools = new Map<string, boolean>();
+  // The extra project folders each live session was spawned with (joined key).
+  // Folders can change on a live project (Lattice links a research folder), and
+  // providers only grant them at spawn, so a changed set restarts the session
+  // with its resume cursor kept. No entry means "unknown": never restart for it.
+  const threadSessionAdditionalFolders = new Map<string, string>();
+  const additionalFoldersKey = (folders: ReadonlyArray<string>) => JSON.stringify(folders);
   // Runtimes a panel started ahead of the first send (showPanelThread). A draft
   // entry names a thread the projection does not have yet; its first turn
   // adopts the runtime when the launch still matches. Any real use of the
@@ -2295,6 +2301,7 @@ const make = Effect.gen(function* () {
       threadProviderOptions.delete(threadId);
       threadSessionModelSelections.delete(threadId);
       threadSessionComputerControl.delete(threadId);
+      threadSessionAdditionalFolders.delete(threadId);
       const editResendPrefix = `${threadId}:`;
       for (const key of editResendTurnStartKeys) {
         if (key.startsWith(editResendPrefix)) {
@@ -2954,8 +2961,13 @@ const make = Effect.gen(function* () {
         previousProviderOptions,
         requestedProviderOptions: resolvedProviderOptions,
       });
+      const previousAdditionalFolders = threadSessionAdditionalFolders.get(threadId);
+      const additionalFoldersChanged =
+        previousAdditionalFolders !== undefined &&
+        previousAdditionalFolders !== additionalFoldersKey(additionalDirectories);
 
       if (
+        !additionalFoldersChanged &&
         !runtimeModeChanged &&
         !providerChanged &&
         !workspaceChanged &&
@@ -2996,7 +3008,8 @@ const make = Effect.gen(function* () {
         !providerOptionsChanged &&
         !shouldRestartForModelChange &&
         !shouldRestartForModelSelectionChange &&
-        !autoApproveSynaraToolsChanged;
+        !autoApproveSynaraToolsChanged &&
+        !additionalFoldersChanged;
       const deferComputerControlRestart = {
         activeSessionBeforeEnsure,
         activeSession: reusableSession,
@@ -3050,6 +3063,7 @@ const make = Effect.gen(function* () {
         shouldRestartForModelSelectionChange,
         computerControlChanged,
         providerOptionsChanged,
+        additionalFoldersChanged,
         hasResumeCursor: resumeCursor !== undefined,
       });
       // Keep the provider cursor when only cwd changes. The existing lifecycle
@@ -3101,6 +3115,7 @@ const make = Effect.gen(function* () {
         freshSessionContextBootstrapThreadIds.add(threadId);
       }
       threadSessionModelSelections.set(threadId, desiredModelSelection);
+      threadSessionAdditionalFolders.set(threadId, additionalFoldersKey(additionalDirectories));
       if (options?.enableComputerControl !== undefined) {
         threadSessionComputerControl.set(threadId, options.enableComputerControl);
       }
@@ -3190,6 +3205,7 @@ const make = Effect.gen(function* () {
         threadSessionModelSelections.set(threadId, desiredModelSelection);
         threadSessionComputerControl.set(threadId, forkComputerControl);
         threadSessionAutoApproveSynaraTools.set(threadId, autoApproveSynaraTools);
+        threadSessionAdditionalFolders.set(threadId, additionalFoldersKey(additionalDirectories));
         setThreadProviderOptions(threadId, resolvedProviderOptions);
         const forkedSession =
           (yield* resolveActiveSession(threadId)) ??
@@ -3292,6 +3308,7 @@ const make = Effect.gen(function* () {
     // the spawning dispatch carried no explicit model selection.
     threadSessionModelSelections.set(threadId, desiredModelSelection);
     threadSessionAutoApproveSynaraTools.set(threadId, autoApproveSynaraTools);
+    threadSessionAdditionalFolders.set(threadId, additionalFoldersKey(additionalDirectories));
     if (options?.enableComputerControl !== undefined) {
       threadSessionComputerControl.set(threadId, options.enableComputerControl);
     }

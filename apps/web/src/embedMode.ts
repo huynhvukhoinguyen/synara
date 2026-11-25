@@ -84,6 +84,12 @@ export interface EmbedModeConfig {
   surface: "chrome" | "drawer";
   hostOrigin: string | null;
   locale: "en" | "zh-CN";
+  /**
+   * The research folder Lattice linked to this paper: the agent reads and writes it as
+   * the project's one extra folder. "" means Lattice linked none (clear any it set);
+   * absent means an older host that never manages extra folders (leave them alone).
+   */
+  researchFolder?: string;
 }
 
 /** Handshake query keys Lattice stamps on the iframe URL. */
@@ -94,6 +100,7 @@ export interface LatticeEmbedSearch {
   surface?: "chrome" | "drawer";
   hostOrigin?: string;
   locale?: "en" | "zh-CN";
+  researchFolder?: string;
 }
 
 export interface SynaraConfirmationRequest {
@@ -515,6 +522,8 @@ export function parseLatticeEmbedSearch(search: Record<string, unknown>): Lattic
       ? (normalizedOrigin(search.hostOrigin) ?? undefined)
       : undefined;
   const locale = search.locale === "zh-CN" || search.locale === "en" ? search.locale : undefined;
+  const researchFolder =
+    typeof search.researchFolder === "string" ? search.researchFolder.trim() : undefined;
   return {
     ...(isEmbedFlag(search.embed) ? { embed: "1" as const } : {}),
     ...(workspaceRoot ? { workspaceRoot } : {}),
@@ -522,6 +531,7 @@ export function parseLatticeEmbedSearch(search: Record<string, unknown>): Lattic
     ...(surface ? { surface } : {}),
     ...(hostOrigin ? { hostOrigin } : {}),
     ...(locale ? { locale } : {}),
+    ...(researchFolder !== undefined ? { researchFolder } : {}),
   };
 }
 
@@ -534,6 +544,7 @@ export function latticeEmbedSearchFromConfig(config: EmbedModeConfig | null): La
     surface: config.surface,
     ...(config.hostOrigin ? { hostOrigin: config.hostOrigin } : {}),
     locale: config.locale,
+    ...(config.researchFolder !== undefined ? { researchFolder: config.researchFolder } : {}),
   };
 }
 
@@ -1863,7 +1874,15 @@ export function initializeEmbedMode(): void {
     const hostOrigin =
       normalizedOrigin(search.get("hostOrigin")) || normalizedOrigin(document.referrer);
     const locale = search.get("locale") === "zh-CN" ? "zh-CN" : "en";
-    const config: EmbedModeConfig = { workspaceRoot, theme, surface, hostOrigin, locale };
+    const researchFolder = search.get("researchFolder")?.trim();
+    const config: EmbedModeConfig = {
+      workspaceRoot,
+      theme,
+      surface,
+      hostOrigin,
+      locale,
+      ...(researchFolder !== undefined ? { researchFolder } : {}),
+    };
     // Claim this frame's storage slot before writing, so sibling embed frames in
     // the same tab cannot overwrite each other's handshake.
     window.name = `${EMBED_FRAME_NAME_PREFIX}${surface}`;
@@ -1917,7 +1936,20 @@ export function readEmbedMode(): EmbedModeConfig | null {
         ? normalizedOrigin(parsed.hostOrigin)
         : null;
     const locale = "locale" in parsed && parsed.locale === "zh-CN" ? "zh-CN" : "en";
-    return workspaceRoot ? { workspaceRoot, theme, surface, hostOrigin, locale } : null;
+    const researchFolder =
+      "researchFolder" in parsed && typeof parsed.researchFolder === "string"
+        ? parsed.researchFolder.trim()
+        : undefined;
+    return workspaceRoot
+      ? {
+          workspaceRoot,
+          theme,
+          surface,
+          hostOrigin,
+          locale,
+          ...(researchFolder !== undefined ? { researchFolder } : {}),
+        }
+      : null;
   } catch {
     return null;
   }

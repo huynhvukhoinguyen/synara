@@ -1248,7 +1248,8 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
         command.workspaceRoot !== undefined ||
         command.defaultModelSelection !== undefined ||
         command.scripts !== undefined ||
-        command.isPinned !== undefined;
+        command.isPinned !== undefined ||
+        command.additionalFolders !== undefined;
       const isLegacyHomeChatContainer = isLegacyHomeChatContainerRow({
         projectTitle: existingProject.title,
         projectWorkspaceRoot: existingProject.workspaceRoot,
@@ -1276,14 +1277,29 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           detail: "The legacy Chats container workspace root cannot be changed.",
         });
       }
-      // Relocating the primary folder must keep the folder set distinct and un-nested.
+      // Relocating the primary folder or replacing the extra folders must keep the
+      // folder set distinct and un-nested.
+      const nextAdditionalFolders = command.additionalFolders ?? existingProject.additionalFolders ?? [];
+      if (command.additionalFolders !== undefined && command.additionalFolders.length > 0) {
+        if (nextProjectKind !== "project") {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Only ordinary projects can have additional folders.",
+          });
+        }
+      }
       if (
-        command.workspaceRoot !== undefined &&
-        (existingProject.additionalFolders ?? []).length > 0
+        (command.workspaceRoot !== undefined || command.additionalFolders !== undefined) &&
+        nextAdditionalFolders.length > 0
       ) {
         const folderProblem = findProjectFolderProblem(
-          [command.workspaceRoot, ...(existingProject.additionalFolders ?? [])],
-          { platform: process.platform },
+          [command.workspaceRoot ?? existingProject.workspaceRoot, ...nextAdditionalFolders],
+          {
+            platform: process.platform,
+            // Linking a folder around the paper is allowed; moving the primary
+            // folder into an existing extra folder still is not.
+            allowPrimaryInsideAdditional: command.workspaceRoot === undefined,
+          },
         );
         if (folderProblem !== null) {
           return yield* new OrchestrationCommandInvariantError({
@@ -1372,6 +1388,9 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
           ...(command.scripts !== undefined ? { scripts: command.scripts } : {}),
           ...(command.isPinned !== undefined ? { isPinned: command.isPinned } : {}),
           ...(changedSpaceId !== undefined ? { spaceId: changedSpaceId } : {}),
+          ...(command.additionalFolders !== undefined
+            ? { additionalFolders: command.additionalFolders }
+            : {}),
           updatedAt: occurredAt,
         },
       } satisfies Omit<Extract<OrchestrationEvent, { type: "project.meta-updated" }>, "sequence">;

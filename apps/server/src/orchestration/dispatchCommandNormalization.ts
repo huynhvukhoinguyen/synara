@@ -279,14 +279,37 @@ export function makeDispatchCommandNormalizer<E>(options: DispatchCommandNormali
           createIfMissing: input.command.createWorkspaceRootIfMissing === true,
         },
       );
+      const additionalFolders =
+        input.command.additionalFolders === undefined
+          ? undefined
+          : yield* Effect.forEach(
+              input.command.additionalFolders,
+              (folder) => options.canonicalizeProjectWorkspaceRoot(folder),
+              { concurrency: 1 },
+            );
       const command = {
         ...input.command,
         workspaceRoot,
+        ...(additionalFolders !== undefined ? { additionalFolders } : {}),
         createWorkspaceRootIfMissing: input.command.createWorkspaceRootIfMissing === true,
       } satisfies OrchestrationCommand;
       return {
         command,
         prepareWorkspaceRoot: deferredPrepareWorkspaceRoot(input.command, workspaceRoot),
+      };
+    }
+
+    // Extra folders must already exist; canonicalize them like project.create does.
+    // (The primary-root branch above only runs when the command relocates the project.)
+    if (input.command.type === "project.meta.update" && input.command.additionalFolders !== undefined) {
+      const additionalFolders = yield* Effect.forEach(
+        input.command.additionalFolders,
+        (folder) => options.canonicalizeProjectWorkspaceRoot(folder),
+        { concurrency: 1 },
+      );
+      return {
+        command: { ...input.command, additionalFolders } as OrchestrationCommand,
+        prepareWorkspaceRoot: null,
       };
     }
 

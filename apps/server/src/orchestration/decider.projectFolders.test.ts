@@ -84,4 +84,63 @@ describe("multi-folder projects", () => {
       }),
     ).toContain("src is inside api. Add only one of them.");
   });
+
+  it("replaces and clears the extra folders of an existing project", async () => {
+    const single = await apply(
+      createEmptyReadModel(now),
+      createMultiFolder({ additionalFolders: undefined }),
+    );
+    const linked = await apply(single, {
+      type: "project.meta.update",
+      commandId: "link-research",
+      projectId: "project-1",
+      additionalFolders: ["/research/magic"],
+    });
+    expect(linked.projects[0]?.additionalFolders).toEqual(["/research/magic"]);
+    expect(linked.projects[0]?.workspaceRoot).toBe("/repos/web");
+    const cleared = await apply(linked, {
+      type: "project.meta.update",
+      commandId: "unlink-research",
+      projectId: "project-1",
+      additionalFolders: [],
+    });
+    expect(cleared.projects[0]?.additionalFolders).toEqual([]);
+  });
+
+  it("accepts an extra folder that contains the primary folder, but not one inside it", async () => {
+    const single = await apply(
+      createEmptyReadModel(now),
+      createMultiFolder({ additionalFolders: undefined }),
+    );
+    const parent = await apply(single, {
+      type: "project.meta.update",
+      commandId: "link-parent",
+      projectId: "project-1",
+      additionalFolders: ["/repos"],
+    });
+    expect(parent.projects[0]?.additionalFolders).toEqual(["/repos"]);
+    expect(
+      await rejection(single, {
+        type: "project.meta.update",
+        commandId: "link-child",
+        projectId: "project-1",
+        additionalFolders: ["/repos/web/data"],
+      }),
+    ).toContain("data is inside web. Add only one of them.");
+  });
+
+  it("rejects replacement extra folders on container projects", async () => {
+    const chat = await apply(
+      createEmptyReadModel(now),
+      createMultiFolder({ kind: "chat", additionalFolders: undefined }),
+    );
+    expect(
+      await rejection(chat, {
+        type: "project.meta.update",
+        commandId: "link-chat",
+        projectId: "project-1",
+        additionalFolders: ["/research/magic"],
+      }),
+    ).toContain("Only ordinary projects can have additional folders.");
+  });
 });
