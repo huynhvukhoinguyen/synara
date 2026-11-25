@@ -40,6 +40,46 @@ export function resolveAgentHostProfile(
 
 export const ACTIVE_AGENT_HOST_PROFILE = resolveAgentHostProfile();
 
+/** The three tools that mutate a bibliography through Lattice's trusted broker. */
+export const LATTICE_BIBLIOGRAPHY_TOOL_NAMES = [
+  "cite",
+  "upgrade_bibliography",
+  "remove_reference",
+] as const;
+export type LatticeBibliographyToolName = (typeof LATTICE_BIBLIOGRAPHY_TOOL_NAMES)[number];
+
+/**
+ * How the writer let the agent change bibliographies in this sidecar. Lattice
+ * decides both facts when it starts the sidecar (Settings → Agent): the
+ * `.bib` write block it applies is the host's, so this only tells the model
+ * the truth about which tools exist and whether file edits may touch a `.bib`.
+ */
+export interface LatticeBibliographyAccess {
+  /** Bibliography tools withheld from the model. */
+  readonly disabledTools: ReadonlySet<LatticeBibliographyToolName>;
+  /** The model's own file tools may edit `.bib` files. */
+  readonly directBibEdit: boolean;
+}
+
+/**
+ * `LATTICE_DISABLED_BIBLIOGRAPHY_TOOLS` is a comma-separated subset of the
+ * tool names; an unknown name is ignored rather than widening anything.
+ * `LATTICE_DIRECT_BIB_EDIT=1` is the only value that allows direct edits.
+ */
+export function resolveLatticeBibliographyAccess(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): LatticeBibliographyAccess {
+  const named = (env.LATTICE_DISABLED_BIBLIOGRAPHY_TOOLS ?? "")
+    .split(",")
+    .map((name) => name.trim());
+  return {
+    disabledTools: new Set(LATTICE_BIBLIOGRAPHY_TOOL_NAMES.filter((tool) => named.includes(tool))),
+    directBibEdit: env.LATTICE_DIRECT_BIB_EDIT?.trim() === "1",
+  };
+}
+
+export const ACTIVE_LATTICE_BIBLIOGRAPHY_ACCESS = resolveLatticeBibliographyAccess();
+
 export function isThreadControlWithinActiveHostBoundary(
   callerProjectId: string,
   targetProjectId: string,
@@ -164,9 +204,15 @@ function adaptToolResult(result: McpToolCallResult): McpToolCallResult {
  * browser control remains unavailable because the embedded runtime has no
  * Electron browser surface to drive.
  */
-export function adaptToolsForActiveHost(tools: ReadonlyArray<ToolEntry>): ReadonlyArray<ToolEntry> {
+export function adaptToolsForActiveHost(
+  tools: ReadonlyArray<ToolEntry>,
+  bibliography: LatticeBibliographyAccess = ACTIVE_LATTICE_BIBLIOGRAPHY_ACCESS,
+): ReadonlyArray<ToolEntry> {
   if (ACTIVE_AGENT_HOST_PROFILE.id !== "lattice") return tools;
   return tools.flatMap((tool) => {
+    if (bibliography.disabledTools.has(tool.definition.name as LatticeBibliographyToolName)) {
+      return [];
+    }
     const alias = LATTICE_TOOL_ALIASES.get(tool.definition.name);
     if (!alias && !LATTICE_NATIVE_TOOL_NAMES.has(tool.definition.name)) return [];
     return [

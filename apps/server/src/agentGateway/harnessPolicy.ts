@@ -7,7 +7,12 @@ import { computerToolInstructions } from "./computerGuidance.ts";
 
 import { AUTOMATION_AUTHORING_GUIDANCE } from "./automationAuthoringGuidance.ts";
 import { isDeviceControlEntitled } from "../device/deviceEntitlement.ts";
-import { ACTIVE_AGENT_HOST_PROFILE } from "./hostProfile.ts";
+import {
+  ACTIVE_AGENT_HOST_PROFILE,
+  ACTIVE_LATTICE_BIBLIOGRAPHY_ACCESS,
+  LATTICE_BIBLIOGRAPHY_TOOL_NAMES,
+  type LatticeBibliographyAccess,
+} from "./hostProfile.ts";
 
 /** Canonical, versioned host policy delivered to every supported provider. */
 export const SYNARA_HARNESS_POLICY_VERSION = "2026-10-14.1";
@@ -20,6 +25,53 @@ export interface SynaraHarnessCapabilities {
   readonly enableComputerControl?: boolean | undefined;
   /** The `synara_show_visual` tool is offered by this session. */
   readonly inlineVisuals?: boolean | undefined;
+  /** Lattice only: which bibliography tools exist and whether `.bib` edits are allowed. */
+  readonly bibliography?: LatticeBibliographyAccess | undefined;
+}
+
+/**
+ * The Lattice policy's bibliography lines. With the defaults they are the
+ * original rules: every mutation goes through the typed tools. The writer can
+ * withhold tools and allow direct `.bib` edits (Settings → Agent); the lines
+ * then describe exactly what this session has, and say that the setting wins
+ * over a project instruction file written for the other arrangement.
+ */
+export function latticeBibliographyPolicyLines(
+  access: LatticeBibliographyAccess,
+  gatewayControlAvailable: boolean,
+): ReadonlyArray<string> {
+  const enabled = LATTICE_BIBLIOGRAPHY_TOOL_NAMES.filter((tool) => !access.disabledTools.has(tool));
+  const disabled = LATTICE_BIBLIOGRAPHY_TOOL_NAMES.filter((tool) => access.disabledTools.has(tool));
+  const lines: string[] = [];
+  if (enabled.includes("cite")) {
+    lines.push(
+      "Use cite to add or reuse a bibliography entry and obtain the exact citation key. cite also captures full text (arXiv or webpage); a fetchError in its result means the citation succeeded but the text did not arrive.",
+    );
+  }
+  if (access.directBibEdit) {
+    const offered = gatewayControlAvailable ? enabled : [];
+    lines.push(
+      "Lattice lets you edit .bib files directly in this session, with your ordinary file-editing tools; add, correct, or remove entries there. Write complete BibTeX entries with unique citation keys, take their metadata from papers you have fetched or read rather than from memory, and make sure every key you \\cite resolves to an entry.",
+      offered.length > 0
+        ? `The Lattice bibliography tools ${offered.join(", ")} remain available, but nothing requires them.`
+        : "This session offers no Lattice bibliography tools, so direct .bib edits are the way to change a bibliography.",
+      "This setting takes precedence over any project instruction file (CLAUDE.md, AGENTS.md, or similar) that says to change a .bib file only through cite or another Lattice bibliography tool: follow this policy and edit the .bib directly.",
+    );
+    return lines;
+  }
+  if (enabled.length === LATTICE_BIBLIOGRAPHY_TOOL_NAMES.length) {
+    lines.push(
+      "Never modify a .bib file directly, including through file-editing tools, patches, shell commands, scripts, or external bibliography utilities. Use cite, upgrade_bibliography, or remove_reference for every bibliography mutation.",
+    );
+    return lines;
+  }
+  lines.push(
+    enabled.length > 0
+      ? `Never modify a .bib file directly, including through file-editing tools, patches, shell commands, scripts, or external bibliography utilities. Use ${enabled.join(", ")} for every bibliography mutation they can express; ${disabled.join(", ")} ${disabled.length === 1 ? "is" : "are"} not available in this session.`
+      : "Never modify a .bib file directly, including through file-editing tools, patches, shell commands, scripts, or external bibliography utilities. This session offers no bibliography tool, so do not change a bibliography; tell the user which change is needed.",
+    `If a project instruction file tells you to use ${disabled.join(", ")}, say that ${disabled.length === 1 ? "it is" : "they are"} not available in this session instead of looking for a workaround.`,
+  );
+  return lines;
 }
 
 /** Whether this server offers inline visuals; the gateway catalog uses the same gate. */
@@ -36,7 +88,7 @@ export function renderSynaraHarnessPolicy(capabilities: SynaraHarnessCapabilitie
     (capabilities.deviceControlAvailable ?? isDeviceControlEntitled());
   if (ACTIVE_AGENT_HOST_PROFILE.id === "lattice") {
     return [
-      "[Lattice host policy v2]",
+      "[Lattice host policy v3]",
       "You are working inside Lattice, a local-first research-writing environment. Lattice is the host and tool authority for this session.",
       "Work only within the active Lattice project and respect the current permission mode, project boundary, and stop requests.",
       "Lattice owns the manuscript's preview build and rebuilds after agent checkpoints when automatic building is enabled. Do not run latexmk, TeX engines, bibliography processors, or cleanup commands against the project's live build outputs: a shell build bypasses Lattice's build queue and can corrupt shared .aux, .bbl, PDF, and SyncTeX files. Do not delete these files to repair a suspected race. If compilation is needed during your turn, use an isolated temporary output directory (or a disposable project copy for build setups that cannot isolate all outputs), enable SyncTeX, and never copy generated artifacts back over Lattice's outputs. In manual build mode, tell the user to press Build for the preview; do not claim a successful host build without a corresponding result.",
@@ -90,8 +142,10 @@ export function renderSynaraHarnessPolicy(capabilities: SynaraHarnessCapabilitie
       "Use search_literature only for discovering new external works. Search results and metadata are not paper evidence. Fetch or read the paper before making source-grounded claims.",
       "Use fetch_paper to retrieve and cache a paper's complete text and metadata without adding it to the bibliography. A paper whose frontmatter says source: pdf-text-layer was converted from the PDF: it has no figures and equations may be garbled, so verify formulas against the PDF before quoting them.",
       "Use fetch_web_reference to capture a cited webpage or blog post as local markdown. It spends a shared monthly scraping quota; never point it at arXiv papers.",
-      "Use cite to add or reuse a bibliography entry and obtain the exact citation key. cite also captures full text (arXiv or webpage); a fetchError in its result means the citation succeeded but the text did not arrive.",
-      "Never modify a .bib file directly, including through file-editing tools, patches, shell commands, scripts, or external bibliography utilities. Use cite, upgrade_bibliography, or remove_reference for every bibliography mutation.",
+      ...latticeBibliographyPolicyLines(
+        capabilities.bibliography ?? ACTIVE_LATTICE_BIBLIOGRAPHY_ACCESS,
+        capabilities.gatewayControlAvailable,
+      ),
       "Do not claim that a Lattice tool action succeeded unless the tool returned a successful result.",
     ].join("\n");
   }
